@@ -1,0 +1,15 @@
+---
+description: Use when defining or changing what is stored for a call, its audio files or the settings.
+---
+# Storage
+
+## General
+- Everything is stored on the Mac in `~/Library/Application Support/LARP/`: a SwiftData store and a `Recordings/<call id>/` folder per call.
+- Settings (transcription language, launch at login) are stored in `UserDefaults`.
+
+## call
+- A call holds: identifier, title (optional, set by the user), start date and time, end date and time, duration, call app name (absent for manual recordings), transcription language, current state, the two audio files, the participants and the transcript lines.
+- Audio is saved as two files per call, `mic.caf` and `system.caf`, AAC mono at about 32 kbps each, written in chunks as it is recorded so that a file cut by a crash is still readable up to the last chunk written.
+- A transcript line holds: speaker (Me, Others, or a participant), start time and end time relative to the start of the call, and text.
+- A participant holds: number (1, 2, …) and an optional name set by the user; it belongs to one call only.
+- Deleting a call deletes its record, its lines, its participants and its `Recordings/<call id>/` folder.

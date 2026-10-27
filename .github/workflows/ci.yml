@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      # The test plan Tests/LARP.xctestplan skips the tests tagged
+      # `.requiresHardware` (Apple speech models, FluidAudio models,
+      # microphone, system audio): they cannot run on a CI runner.
+      - name: Build and test
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild test \
+            -project LARP.xcodeproj \
+            -scheme LARP \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build \
+            -resultBundlePath build/TestResults.xcresult \
+            | tee build/xcodebuild.log
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/TestResults.xcresult

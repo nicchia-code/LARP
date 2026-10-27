@@ -1,0 +1,29 @@
+{
+  "configurations" : [
+    {
+      "id" : "5C0A5B7E-6F0D-4B1E-9B5B-3D1E0A9C2A11",
+      "name" : "Default",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "skippedTags" : {
+        "tags" : [
+          "requiresHardware"
+        ]
+      },
+      "target" : {
+        "containerPath" : "container:LARP.xcodeproj",
+        "identifier" : "0C353658EAEE1EDAD6DDE06D",
+        "name" : "LARPTests"
+      }
+    }
+  ],
+  "version" : 1
+}
