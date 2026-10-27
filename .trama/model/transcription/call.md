@@ -27,7 +27,8 @@ Both tracks are transcribed from the saved audio in the chosen language, the mic
 
 ### Separating participants
 The transcript can already be read with "Me" and "Others". The system audio is analysed by voice to tell the other participants apart.
-- `PARTICIPANTS_SEPARATED` → Ready: every "Others" line is given to "Participant 1", "Participant 2" and so on, by voice.
+- `PARTICIPANTS_SEPARATED` → Ready: when transcript refinement is off; every "Others" line is given to "Participant 1", "Participant 2" and so on, by voice.
+- `PARTICIPANTS_SEPARATED` → Refining transcript: when transcript refinement is on; every "Others" line is given to "Participant 1", "Participant 2" and so on, by voice.
 - `SEPARATION_FAILED` → Awaiting separation retry: the transcript stays with "Me" and "Others".
 - `macos.APP_LAUNCHED` → Separating participants: the app was closed during the separation, which starts again.
 - `user.RENAME_CALL` → Separating participants: the call takes the new title.
@@ -40,10 +41,30 @@ The transcript can be read with "Me" and "Others"; telling the participants apar
 - `user.RENAME_CALL` → Awaiting separation retry: the call takes the new title.
 - `user.DELETE_CALL` → Deleted: the audio and transcript are deleted.
 
+### Refining transcript
+The transcript can already be read as transcription and separation left it. The original text of its lines, with who spoke each line and when, is sent to the assistant, never the audio, to correct the words recognised wrongly and the lines given to the wrong participant. Every refinement starts from the original lines, never from an earlier refinement.
+- `TRANSCRIPT_REFINED` → Ready: every line takes the corrected text and participant; the original text and speaker of every line are kept.
+- `REFINEMENT_FAILED` → Awaiting refinement retry: the transcript stays as it was.
+- `user.TURN_OFF_REFINEMENT` → Ready: the refinement stops and the transcript stays as it was.
+- `macos.APP_LAUNCHED` → Refining transcript: the app was closed during the refinement, which starts again.
+- `user.RENAME_CALL` → Refining transcript: the call takes the new title.
+- `user.DELETE_CALL` → Deleted: the refinement stops and the audio and transcript are deleted.
+
+### Awaiting refinement retry
+The transcript can be read as transcription and separation left it; refining it failed and will be tried again on its own.
+- `macos.NETWORK_AVAILABLE` → Refining transcript: tries again.
+- `macos.APP_LAUNCHED` → Refining transcript: tries again.
+- `user.REFINE_TRANSCRIPT` → Refining transcript: tries again at once.
+- `user.TURN_OFF_REFINEMENT` → Ready: no further attempt; the transcript stays as it was.
+- `user.RENAME_CALL` → Awaiting refinement retry: the call takes the new title.
+- `user.DELETE_CALL` → Deleted: the audio and transcript are deleted.
+
 ### Ready
 The transcript is complete and every line says who spoke: "Me" or one of the participants.
 - `user.RENAME_CALL` → Ready: the call takes the new title.
 - `user.RENAME_PARTICIPANT` → Ready: the participant takes the new name everywhere in this call's transcript, and only in this call.
+- `user.REFINE_TRANSCRIPT` → Refining transcript: only if transcript refinement is on; also for a call refined before, and for calls recorded before refinement existed.
+- `user.RESTORE_TRANSCRIPT` → Ready: only if the transcript has been refined; every line gets back its original text and speaker, and the call is refined again only when the user asks.
 - `user.DELETE_CALL` → Deleted: the audio and transcript are deleted.
 
 ### Deleted (final)
@@ -59,6 +80,12 @@ Emitted when every "Others" line has been given to a participant.
 
 ### SEPARATION_FAILED
 Emitted when telling the participants apart could not be done, for example because the voice models could not be downloaded.
+
+### TRANSCRIPT_REFINED
+Emitted when the assistant has answered with a correction for every line sent and the corrections have been applied.
+
+### REFINEMENT_FAILED
+Emitted when refining could not be done: the assistant cannot be reached, does not answer in time, or its answer does not match the lines sent.
 
 ### DELETED
 Emitted when the call has been deleted.

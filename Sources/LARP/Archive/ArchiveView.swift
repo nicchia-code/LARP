@@ -101,6 +101,16 @@ struct ArchiveView: View {
             }
             .disabled(selectedCall?.lines.isEmpty ?? true)
 
+            Button("Rifinisci testo", systemImage: "wand.and.stars") {
+                if let call = selectedCall { lifecycle.refineTranscript(call) }
+            }
+            .disabled(selectedCall.map { !lifecycle.canRefine($0) } ?? true)
+
+            Button("Ripristina originale", systemImage: "arrow.uturn.backward") {
+                if let call = selectedCall { lifecycle.restoreTranscript(call) }
+            }
+            .disabled(selectedCall.map { !lifecycle.canRestore($0) } ?? true)
+
             Button("Elimina", systemImage: "trash") {
                 isConfirmingDelete = true
             }

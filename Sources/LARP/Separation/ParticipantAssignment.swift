@@ -20,16 +20,16 @@ enum ParticipantAssignment {
     /// The participant number (1, 2, …) of each line of `lines`, in the same order.
     ///
     /// - A line goes to the voice whose segments overlap it most in time.
-    /// - A line without any overlap goes to the voice of the nearest segment.
+    /// - A line that no voice overlaps goes to the participant of the recognized
+    ///   line nearest to it in time (the earlier one when two are equally near).
+    /// - When no line is recognized (no voice found, or none overlaps a line), every
+    ///   line goes to Participant 1.
     /// - Participants are numbered in the order in which they first speak in the
     ///   transcript (by start of their first line); a voice that gets no line gets
     ///   no number.
     ///
-    /// Every entry is `nil` when `segments` is empty: no voice was found, so no
-    /// line can be given to a participant.
-    static func assign(lines: [LineSpan], segments: [SpeakerSegment]) -> [Int?] {
-        guard !segments.isEmpty else { return lines.map { _ in nil } }
-
+    /// Every line gets a number: the result has the length of `lines`.
+    static func assign(lines: [LineSpan], segments: [SpeakerSegment]) -> [Int] {
         let segmentsBySpeaker = Dictionary(grouping: segments, by: \.speaker)
         // Ties are broken by the voice that speaks first, then by name, so the
         // result does not depend on dictionary order.
@@ -39,26 +39,41 @@ enum ParticipantAssignment {
             return first == other ? lhs < rhs : first < other
         }
 
-        let speakerOfLine = lines.map { line in
-            speaker(of: line, speakers: speakers, segmentsBySpeaker: segmentsBySpeaker)
+        let recognizedVoice = lines.map { line in
+            voice(of: line, speakers: speakers, segmentsBySpeaker: segmentsBySpeaker)
         }
-
-        var numbers: [String: Int] = [:]
         let chronological = lines.indices.sorted { lhs, rhs in
             lines[lhs].start == lines[rhs].start ? lhs < rhs : lines[lhs].start < lines[rhs].start
         }
-        for index in chronological {
-            let speaker = speakerOfLine[index]
-            if numbers[speaker] == nil {
-                numbers[speaker] = numbers.count + 1
+
+        // Without any recognized line there is no voice to follow: one participant.
+        let recognized = chronological.filter { recognizedVoice[$0] != nil }
+        guard !recognized.isEmpty else { return lines.map { _ in 1 } }
+
+        // The lines no voice overlaps take the voice of the nearest recognized line.
+        let voiceOfLine = lines.indices.map { index -> String in
+            if let voice = recognizedVoice[index] { return voice }
+            var nearest: (voice: String?, distance: TimeInterval) = (nil, .infinity)
+            for other in recognized {
+                let distance = max(0, lines[other].start - lines[index].end, lines[index].start - lines[other].end)
+                if distance < nearest.distance {
+                    nearest = (recognizedVoice[other], distance)
+                }
             }
+            return nearest.voice ?? ""
         }
-        return speakerOfLine.map { numbers[$0] }
+
+        var numbers: [String: Int] = [:]
+        for index in chronological where numbers[voiceOfLine[index]] == nil {
+            numbers[voiceOfLine[index]] = numbers.count + 1
+        }
+        return voiceOfLine.map { numbers[$0] ?? 1 }
     }
 
-    private static func speaker(
+    /// The voice whose segments overlap `line` most, or `nil` when none overlaps it.
+    private static func voice(
         of line: LineSpan, speakers: [String], segmentsBySpeaker: [String: [SpeakerSegment]]
-    ) -> String {
+    ) -> String? {
         var best: (speaker: String, overlap: TimeInterval)?
         for speaker in speakers {
             let overlap = (segmentsBySpeaker[speaker] ?? []).reduce(0) { total, segment in
@@ -68,20 +83,6 @@ enum ParticipantAssignment {
                 best = (speaker, overlap)
             }
         }
-        if let best {
-            return best.speaker
-        }
-
-        var nearest: (speaker: String, distance: TimeInterval)?
-        for speaker in speakers {
-            for segment in segmentsBySpeaker[speaker] ?? [] {
-                let distance = max(0, segment.start - line.end, line.start - segment.end)
-                if distance < (nearest?.distance ?? .infinity) {
-                    nearest = (speaker, distance)
-                }
-            }
-        }
-        // `speakers` is not empty, so there is always a nearest segment.
-        return nearest?.speaker ?? speakers[0]
+        return best?.speaker
     }
 }

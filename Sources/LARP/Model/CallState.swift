@@ -7,5 +7,7 @@ enum CallState: String, Codable, CaseIterable, Sendable {
     case transcribing
     case separatingParticipants
     case awaitingSeparationRetry
+    case refiningTranscript
+    case awaitingRefinementRetry
     case ready
 }

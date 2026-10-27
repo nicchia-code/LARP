@@ -25,6 +25,7 @@ extension Notification {
 /// - **Transcribing** / **Awaiting language**: transcription from the saved audio,
 ///   one call at a time (`CallLifecycle+Transcription`).
 /// - **Separating participants**: `ParticipantSeparating` (`CallLifecycle+Separation`).
+/// - **Refining transcript**: `TranscriptRefining` (`CallLifecycle+Refinement`).
 /// - **Ready** and rename/delete in every state: here.
 ///
 /// To add a transition, add it to `CallStateMachine` and, if entering a state starts
@@ -49,6 +50,10 @@ final class CallLifecycle {
     @ObservationIgnored let transcriptionRetryDelay: Duration
     /// Tells the participants apart in **Separating participants**.
     @ObservationIgnored let separator: (any ParticipantSeparating)?
+    /// Asks the assistant to refine transcripts in **Refining transcript**.
+    @ObservationIgnored let refiner: (any TranscriptRefining)?
+    /// Whether transcript refinement is on.
+    @ObservationIgnored let refinementIsOn: @MainActor () -> Bool
     @ObservationIgnored let now: @Sendable () -> Date
 
     // Recording (see CallLifecycle+Recording)
@@ -67,6 +72,10 @@ final class CallLifecycle {
     @ObservationIgnored var runningSeparations: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
     @ObservationIgnored var separationCounter = 0
 
+    // Refinement of transcripts (see CallLifecycle+Refinement)
+    @ObservationIgnored var runningRefinements: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored var refinementCounter = 0
+
     @ObservationIgnored private var eventTasks: [Task<Void, Never>] = []
 
     init(
@@ -79,6 +88,8 @@ final class CallLifecycle {
         endRecorderRecording: @escaping @MainActor () -> Void,
         transcriptionRetryDelay: Duration = .seconds(60),
         separator: (any ParticipantSeparating)? = nil,
+        refiner: (any TranscriptRefining)? = nil,
+        refinementIsOn: @escaping @MainActor () -> Bool = { false },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.context = context
@@ -90,6 +101,8 @@ final class CallLifecycle {
         self.endRecorderRecording = endRecorderRecording
         self.transcriptionRetryDelay = transcriptionRetryDelay
         self.separator = separator
+        self.refiner = refiner
+        self.refinementIsOn = refinementIsOn
         self.now = now
     }
 
@@ -135,7 +148,9 @@ final class CallLifecycle {
         for call in calls(in: [.transcribing]) {
             apply(.appLaunched(languageReady: true), to: call)
         }
-        for call in calls(in: [.separatingParticipants, .awaitingSeparationRetry]) {
+        for call in calls(in: [
+            .separatingParticipants, .awaitingSeparationRetry, .refiningTranscript, .awaitingRefinementRetry,
+        ]) {
             apply(.appLaunched(languageReady: true), to: call)
         }
     }
@@ -174,7 +189,9 @@ final class CallLifecycle {
             scheduleTranscription()
         case .separatingParticipants:
             startSeparation(of: call)
-        case .recording, .awaitingLanguage, .awaitingSeparationRetry, .ready:
+        case .refiningTranscript:
+            startRefinement(of: call)
+        case .recording, .awaitingLanguage, .awaitingSeparationRetry, .awaitingRefinementRetry, .ready:
             break
         }
     }
@@ -225,6 +242,7 @@ final class CallLifecycle {
         failedTranscriptions.remove(id)
         transcriptionRetries.removeValue(forKey: id)?.cancel()
         cancelSeparation(of: id)
+        cancelRefinement(of: id)
         do {
             try ArchiveStore.delete(call, in: context)
         } catch {

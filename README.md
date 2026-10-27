@@ -1,6 +1,6 @@
 # LARP
 
-A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Everything stays on the Mac: no cloud, no account, no telemetry. The interface is in Italian.
+A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Audio always stays on the Mac, and the app has no cloud, account or telemetry of its own. The only optional exception is transcript refinement, which is off by default and sends the transcript text (never the audio) through omp, an optional external program that is not bundled with the app, to the model provider configured in omp. The interface is in Italian.
 
 Requirements: an Apple silicon Mac (M1 or later) with macOS 26 or later, and Xcode.
 
@@ -71,6 +71,14 @@ To install a version, download `LARP-<version>.dmg` from the Release, open it an
 
 Updates are manual: download the new version and replace `LARP.app`. The app does not check for updates and contacts no update service. After every update macOS asks again for the microphone and system audio permissions.
 
+## Transcript refinement with omp
+
+Audio always stays on the Mac. The app has no cloud, account or telemetry of its own.
+
+Transcript refinement is off by default. When it is on, the text of the transcript (never the audio) is sent through omp to the model provider configured in omp.
+
+Refinement needs omp installed and configured by the user, and found in the `PATH` of the user's login shell. In the settings, the "Rifinisci il testo con omp" switch turns refinement on and shows whether omp is ready.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request on a `macos-26` runner: it installs XcodeGen, generates the project, builds and runs the tests.
@@ -93,3 +101,5 @@ Data lives in `~/Library/Application Support/LARP/`: the SwiftData store (`LARP.
 ## Dependencies
 
 Swift Package Manager only. The single third-party dependency is [FluidAudio](https://github.com/FluidInference/FluidAudio), pinned in `project.yml`.
+
+omp is not bundled with the app: it is an optional external program, needed only for transcript refinement (see above) and installed by the user.

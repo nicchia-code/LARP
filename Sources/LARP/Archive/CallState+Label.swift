@@ -9,6 +9,8 @@ extension CallState {
         case .transcribing: "Trascrizione…"
         case .separatingParticipants: "Separazione voci…"
         case .awaitingSeparationRetry: "Voci da separare"
+        case .refiningTranscript: "Rifinitura testo…"
+        case .awaitingRefinementRetry: "Testo da rifinire"
         case .ready: nil
         }
     }

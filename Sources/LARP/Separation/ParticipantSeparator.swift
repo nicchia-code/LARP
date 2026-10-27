@@ -6,7 +6,9 @@ import SwiftData
 /// the caller, which reads the outcome of `separate(_:)`.
 protocol ParticipantSeparating: Sendable {
     /// Gives every "Others" line of `call` to "Participant 1", "Participant 2"
-    /// and so on, by voice, and saves. The lines of "Me" do not change.
+    /// and so on, by voice, and saves. A line no voice is found for goes to the
+    /// participant of the nearest line that has one; when no line has one, all
+    /// go to "Participant 1". The lines of "Me" do not change.
     ///
     /// - Throws: any error when telling the voices apart failed (the transcript
     ///   stays with "Me" and "Others"); `CancellationError` when the task was
@@ -29,7 +31,7 @@ struct ParticipantSeparator: ParticipantSeparating {
 
         // Without lines of the others there is nothing to tell apart: no
         // models, no network.
-        var assignment: [Int?] = []
+        var assignment: [Int] = []
         if !lines.isEmpty {
             let segments = try await diarizer.diarize(audioAt: call.systemAudioURL)
             try Task.checkCancellation()
@@ -49,11 +51,6 @@ struct ParticipantSeparator: ParticipantSeparating {
         call.participants.removeAll()
         var participants: [Int: Participant] = [:]
         for (line, number) in zip(lines, assignment) {
-            guard let number else {
-                line.speakerKind = .others
-                line.participant = nil
-                continue
-            }
             let participant: Participant
             if let existing = participants[number] {
                 participant = existing

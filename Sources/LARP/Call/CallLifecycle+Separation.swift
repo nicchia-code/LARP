@@ -32,7 +32,7 @@ extension CallLifecycle {
 
     private func finishSeparation(callID: UUID, failed: Bool) {
         guard let call = call(id: callID), call.state == .separatingParticipants else { return }
-        apply(failed ? .separationFailed : .participantsSeparated, to: call)
+        apply(failed ? .separationFailed : .participantsSeparated(refinementOn: refinementIsOn()), to: call)
     }
 
     /// Stops the separation of the call, if running.
@@ -40,9 +40,10 @@ extension CallLifecycle {
         runningSeparations.removeValue(forKey: callID)?.task.cancel()
     }
 
-    /// `macos.NETWORK_AVAILABLE`: the calls that wait to try the separation again do.
+    /// `macos.NETWORK_AVAILABLE`: the calls that wait to try the separation or the
+    /// refinement again do.
     func networkAvailable() {
-        for call in calls(in: [.awaitingSeparationRetry]) {
+        for call in calls(in: [.awaitingSeparationRetry, .awaitingRefinementRetry]) {
             apply(.networkAvailable, to: call)
         }
     }

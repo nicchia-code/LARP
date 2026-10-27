@@ -11,7 +11,8 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 
 ## General
 
-- Privacy: audio and transcripts never leave the Mac; the only network use is the download of Apple speech models and FluidAudio models.
+- Privacy: audio never leaves the Mac. Transcripts never leave the Mac, except the lines of a call sent to omp for refinement, only while transcript refinement is on; what is sent is limited to what `requirements/rules#call` lists.
+- The app's own network use is only the download of Apple speech models and FluidAudio models; omp reaches the model provider configured in omp.
 - On an M1 Mac, recording with live transcription of both tracks must not drop audio during a one-hour call.
 
 ## call/Recording

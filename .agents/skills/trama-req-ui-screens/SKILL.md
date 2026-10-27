@@ -28,10 +28,10 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 ## main-window
 
 - Split view: on the left a search field and the list of calls, newest first, each with title, date and duration; on the right the selected call.
-- Each call in the list shows its state when it is not Ready: "In registrazione", "In attesa della lingua", "Trascrizione…", "Separazione voci…", "Voci da separare".
+- Each call in the list shows its state when it is not Ready: "In registrazione", "In attesa della lingua", "Trascrizione…", "Separazione voci…", "Voci da separare", "Rifinitura testo…", "Testo da rifinire".
 - The selected call shows the title (editable in place), date, duration, the app of the call, the playback controls and the transcript; each line shows the speaker, the start time as mm:ss and the text.
 - Clicking a speaker name of a participant allows renaming it.
-- Toolbar actions: "Esporta…" (disabled when there is no transcript) and "Elimina", which asks for confirmation before deleting.
+- Toolbar actions: "Esporta…" (disabled when there is no transcript), "Rifinisci testo" (enabled only when transcript refinement is on and the call is Ready or in "Testo da rifinire"), "Ripristina originale" (enabled only when the call has been refined, also with refinement off) and "Elimina", which asks for confirmation before deleting.
 
 ## playback
 
@@ -40,4 +40,5 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 
 ## settings
 
-- The settings window has the transcription language ("Italiano", "English") with its status ("Pronta", "Download in corso…", "Non disponibile, nuovo tentativo appena possibile") and the "Avvia all'accesso" switch.
+- The settings window has the transcription language ("Italiano", "English") with its status ("Pronta", "Download in corso…", "Non disponibile, nuovo tentativo appena possibile"), the "Rifinisci il testo con omp" switch and the "Avvia all'accesso" switch.
+- While "Rifinisci il testo con omp" is on, the status of omp is shown next to it: "Verifica in corso…", "omp pronto" or "omp non trovato".

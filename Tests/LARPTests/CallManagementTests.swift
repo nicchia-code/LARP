@@ -67,7 +67,8 @@ struct CallManagementTests {
     @Test(
         "renaming a call keeps its state",
         arguments: [
-            CallState.awaitingLanguage, .transcribing, .separatingParticipants, .awaitingSeparationRetry, .ready,
+            CallState.awaitingLanguage, .transcribing, .separatingParticipants, .awaitingSeparationRetry,
+            .refiningTranscript, .awaitingRefinementRetry, .ready,
         ])
     func renameCall(state: CallState) throws {
         let harness = try CallHarness()
@@ -221,7 +222,8 @@ struct CallManagementTests {
     @Test(
         "deleting a call removes the call, its lines, its participants and its audio, and emits DELETED",
         arguments: [
-            CallState.awaitingLanguage, .transcribing, .separatingParticipants, .awaitingSeparationRetry, .ready,
+            CallState.awaitingLanguage, .transcribing, .separatingParticipants, .awaitingSeparationRetry,
+            .refiningTranscript, .awaitingRefinementRetry, .ready,
         ])
     func deleteCall(state: CallState) throws {
         let harness = try CallHarness()

@@ -216,6 +216,13 @@ final class RecorderEndCounter {
     var count = 0
 }
 
+/// Whether transcript refinement is on, for `CallLifecycle.refinementIsOn`.
+@MainActor
+final class RefinementSwitch {
+    var isOn: Bool
+    init(_ isOn: Bool) { self.isOn = isOn }
+}
+
 /// A `CallLifecycle` over an in-memory archive and fake collaborators.
 @MainActor
 struct CallHarness {
@@ -225,6 +232,7 @@ struct CallHarness {
     let transcription = FakeTranscription()
     let captureAlerts = FakeCaptureFailureAlerts()
     let recorderEnds = RecorderEndCounter()
+    let refinement: RefinementSwitch
     let lifecycle: CallLifecycle
     private let clock: Clock
 
@@ -244,9 +252,13 @@ struct CallHarness {
         readyLanguages: Set<String> = ["it-IT"],
         chosenLanguage: String = "it-IT",
         separator: (any ParticipantSeparating)? = nil,
+        refiner: (any TranscriptRefining)? = nil,
+        refinementOn: Bool = false,
         transcriptionRetryDelay: Duration = .seconds(3600)
     ) throws {
         container = try ArchiveStore.makeContainer(inMemory: true)
+        let refinement = RefinementSwitch(refinementOn)
+        self.refinement = refinement
         languages = FakeLanguages(ready: readyLanguages)
         let clock = Clock(Date(timeIntervalSince1970: 1_800_000_000))
         self.clock = clock
@@ -260,6 +272,8 @@ struct CallHarness {
             endRecorderRecording: { [recorderEnds] in recorderEnds.count += 1 },
             transcriptionRetryDelay: transcriptionRetryDelay,
             separator: separator,
+            refiner: refiner,
+            refinementIsOn: { [refinement] in refinement.isOn },
             now: { clock.date }
         )
     }

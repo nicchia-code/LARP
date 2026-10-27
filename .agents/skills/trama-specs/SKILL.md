@@ -19,6 +19,7 @@ The technologies this project is built, tested and released with, from the devel
 - FluidAudio: on-device speaker diarization on Core ML
 - ServiceManagement (chosen by the agent: SMAppService is the system API for launch at login)
 - XcodeGen (chosen by the agent: keeps the Xcode project as a readable, versioned project.yml)
+- omp (Agent Client Protocol): transcript refinement through the omp installed by the user, started as `omp acp` over stdio with the model configured in omp; not bundled with the app
 
 ## Data and persistence
 
@@ -44,5 +45,5 @@ The technologies this project is built, tested and released with, from the devel
 ## Notes
 
 Target: Apple silicon Macs (M1 and later) with macOS 26 or later.
-No cloud and no infrastructure files: everything runs on the Mac.
+No cloud and no infrastructure files: everything runs on the Mac, except transcript refinement, where omp sends the text of the transcript (never the audio) to the model provider configured in omp.
 

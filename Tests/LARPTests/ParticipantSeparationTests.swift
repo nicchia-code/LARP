@@ -33,13 +33,31 @@ struct ParticipantAssignmentTests {
         #expect(numbers == [1, 1])
     }
 
-    @Test("a line without overlap goes to the voice of the nearest segment")
-    func nearestSegmentWithoutOverlap() {
+    @Test("a line without overlap goes to the participant of the nearest recognized line")
+    func nearestRecognizedLine() {
         let segments = [segment("A", 0, 2), segment("B", 10, 12)]
         let numbers = ParticipantAssignment.assign(
-            lines: [span(0, 1), span(3, 4), span(8, 9), span(20, 21)], segments: segments)
-        // 3-4 is 1 s from A, 8-9 is 1 s from B, 20-21 is 8 s from B
-        #expect(numbers == [1, 1, 2, 2])
+            lines: [span(0, 1), span(3, 4), span(8, 9), span(10, 11), span(20, 21)], segments: segments)
+        // 3-4 is 2 s from 0-1 (A) and 6 s from 10-11; 8-9 is 1 s from 10-11 (B); 20-21 is 9 s from 10-11 (B)
+        #expect(numbers == [1, 1, 2, 2, 2])
+    }
+
+    @Test("a line equally near two recognized lines goes to the earlier one")
+    func nearestTieGoesToEarlierLine() {
+        let segments = [segment("A", 0, 1), segment("B", 5, 6)]
+        let numbers = ParticipantAssignment.assign(
+            lines: [span(0, 1), span(2, 4), span(5, 6)], segments: segments)
+        // 2-4 is 1 s from both
+        #expect(numbers == [1, 1, 2])
+    }
+
+    @Test("a participant takes the number of its first line even when that line has no overlap")
+    func numberedByFirstLineWithoutOverlap() {
+        let segments = [segment("A", 10, 12), segment("B", 20, 22)]
+        // 0-1 follows the nearest recognized line, 10-11 (A)
+        let numbers = ParticipantAssignment.assign(
+            lines: [span(20, 21), span(0, 1), span(10, 11)], segments: segments)
+        #expect(numbers == [2, 1, 1])
     }
 
     @Test("participants are numbered in the order in which they first speak")
@@ -68,9 +86,12 @@ struct ParticipantAssignmentTests {
         #expect(first == [1, 2])
     }
 
-    @Test("without segments no line is given to a participant")
-    func noSegments() {
-        #expect(ParticipantAssignment.assign(lines: [span(0, 1)], segments: []) == [nil])
+    @Test("without any recognized line every line goes to Participant 1")
+    func noRecognizedLine() {
+        #expect(ParticipantAssignment.assign(lines: [span(0, 1), span(5, 6)], segments: []) == [1, 1])
+        #expect(
+            ParticipantAssignment.assign(lines: [span(0, 1), span(5, 6)], segments: [segment("A", 20, 30)])
+                == [1, 1])
         #expect(ParticipantAssignment.assign(lines: [], segments: [segment("A", 0, 1)]).isEmpty)
     }
 }
@@ -163,15 +184,29 @@ struct ParticipantSeparatorTests {
         #expect(sortedLines(call).map(\.speakerName) == ["Io", "Partecipante 1", "Partecipante 1", "Partecipante 1"])
     }
 
-    @Test("when no voice is found the Others lines stay with Others")
+    @Test("when no voice is found every Others line goes to Participant 1")
     func noVoicesFound() async throws {
         let container = try ArchiveStore.makeContainer(inMemory: true)
         let call = makeCall(in: container.mainContext)
 
         try await ParticipantSeparator(diarizer: FakeDiarizer(result: .success([]))).separate(call)
 
-        #expect(sortedLines(call).map(\.speakerKind) == [.me, .others, .others, .others])
-        #expect(call.participants.isEmpty)
+        #expect(sortedLines(call).map(\.speakerKind) == [.me, .participant, .participant, .participant])
+        #expect(sortedLines(call).map(\.speakerName) == ["Io", "Partecipante 1", "Partecipante 1", "Partecipante 1"])
+        #expect(call.participants.map(\.number) == [1])
+    }
+
+    @Test("a line no voice overlaps is given to the participant of the nearest recognized line")
+    func unrecognizedLineFollowsNearest() async throws {
+        let container = try ArchiveStore.makeContainer(inMemory: true)
+        let call = makeCall(in: container.mainContext)
+        // Only the line at 5-7 and the one at 8-9 overlap a voice; 2-4 is the nearest to 5-7.
+        let diarizer = FakeDiarizer(result: .success([segment("A", 5, 7), segment("B", 8, 9)]))
+
+        try await ParticipantSeparator(diarizer: diarizer).separate(call)
+
+        #expect(sortedLines(call).map(\.speakerName) == ["Io", "Partecipante 1", "Partecipante 1", "Partecipante 2"])
+        #expect(call.participants.map(\.number).sorted() == [1, 2])
     }
 
     @Test("a call deleted during the separation stops it cleanly")
@@ -223,9 +258,11 @@ struct ParticipantSeparatorTests {
 
 @Suite("call machine: speaker separation")
 struct SeparationTransitionTests {
-    @Test("Separating participants → Ready when the participants are separated")
+    @Test("Separating participants → Ready when the participants are separated and refinement is off")
     func separatedGoesReady() {
-        #expect(CallStateMachine.target(from: .separatingParticipants, on: .participantsSeparated) == .state(.ready))
+        #expect(
+            CallStateMachine.target(from: .separatingParticipants, on: .participantsSeparated(refinementOn: false))
+                == .state(.ready))
     }
 
     @Test("Separating participants → Awaiting separation retry when it fails")

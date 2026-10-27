@@ -18,6 +18,7 @@ struct LARPApp: App {
             fatalError("Impossibile aprire l'archivio: \(error)")
         }
         TranscriptionLanguageController.shared.start()
+        TranscriptRefinementController.shared.appLaunched()
         // The call machine reacts to the recorder and to the language readiness.
         callLifecycle = CallLifecycle(
             context: modelContainer.mainContext,
@@ -27,15 +28,24 @@ struct LARPApp: App {
             transcription: SpeechTranscriptionService(),
             captureFailureAlerts: CaptureFailureAlertPresenter(),
             endRecorderRecording: { Recorder.shared.stopRecording() },
-            separator: ParticipantSeparator()
+            separator: ParticipantSeparator(),
+            refiner: OmpTranscriptRefiner(),
+            refinementIsOn: { TranscriptRefinementController.shared.isOn }
         )
         callLifecycle.start(recorderEvents: Recorder.shared.events)
-        // `macos.NETWORK_AVAILABLE`: calls waiting to separate participants try again.
+        // `macos.NETWORK_AVAILABLE`: calls waiting to separate participants or to be refined try again.
         let networkEvents = NetworkMonitor.shared.availableEvents
         let lifecycle = callLifecycle
         Task {
             for await _ in networkEvents {
                 lifecycle.networkAvailable()
+            }
+        }
+        // `user.TURN_OFF_REFINEMENT`: the refinements in progress stop.
+        let turnOffEvents = TranscriptRefinementController.shared.turnOffEvents
+        Task {
+            for await _ in turnOffEvents {
+                lifecycle.turnOffRefinement()
             }
         }
         Recorder.shared.startMonitoring()

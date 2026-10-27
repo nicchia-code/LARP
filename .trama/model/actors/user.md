@@ -16,6 +16,15 @@ The user stops the recording in progress from the menu bar.
 ### CHOOSE_LANGUAGE
 The user chooses the transcription language in the settings.
 
+### OPEN_SETTINGS
+The user opens the settings window.
+
+### TURN_ON_REFINEMENT
+The user turns on the refinement of transcripts in the settings.
+
+### TURN_OFF_REFINEMENT
+The user turns off the refinement of transcripts in the settings.
+
 ### OPEN_WINDOW
 The user opens the archive window.
 
@@ -33,6 +42,12 @@ The user gives a call a title of their own.
 
 ### RENAME_PARTICIPANT
 The user gives a participant of a call a name of their own.
+
+### REFINE_TRANSCRIPT
+The user asks to refine the transcript of the selected call.
+
+### RESTORE_TRANSCRIPT
+The user brings the transcript of the selected call back to its original text and speakers.
 
 ### DELETE_CALL
 The user deletes a call after confirming.
