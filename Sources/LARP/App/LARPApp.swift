@@ -9,6 +9,7 @@ struct LARPApp: App {
     static let archiveWindowID = "archive"
 
     private let modelContainer: ModelContainer
+    private let callLifecycle: CallLifecycle
 
     init() {
         do {
@@ -16,17 +17,42 @@ struct LARPApp: App {
         } catch {
             fatalError("Impossibile aprire l'archivio: \(error)")
         }
+        TranscriptionLanguageController.shared.start()
+        // The call machine reacts to the recorder and to the language readiness.
+        callLifecycle = CallLifecycle(
+            context: modelContainer.mainContext,
+            languages: TranscriptionLanguageController.shared,
+            chosenLanguage: { TranscriptionLanguageController.shared.language.rawValue },
+            capture: CallAudioCapture(),
+            transcription: SpeechTranscriptionService(),
+            captureFailureAlerts: CaptureFailureAlertPresenter(),
+            endRecorderRecording: { Recorder.shared.stopRecording() },
+            separator: ParticipantSeparator()
+        )
+        callLifecycle.start(recorderEvents: Recorder.shared.events)
+        // `macos.NETWORK_AVAILABLE`: calls waiting to separate participants try again.
+        let networkEvents = NetworkMonitor.shared.availableEvents
+        let lifecycle = callLifecycle
+        Task {
+            for await _ in networkEvents {
+                lifecycle.networkAvailable()
+            }
+        }
+        Recorder.shared.startMonitoring()
     }
 
     var body: some Scene {
-        MenuBarExtra("LARP", systemImage: "mic") {
-            MenuBarContent()
+        MenuBarExtra {
+            MenuBarContent(recorder: Recorder.shared)
+        } label: {
+            MenuBarLabel(recorder: Recorder.shared)
         }
 
         Window("Archivio", id: Self.archiveWindowID) {
             ArchiveView()
         }
         .modelContainer(modelContainer)
+        .environment(callLifecycle)
 
         Settings {
             SettingsView()

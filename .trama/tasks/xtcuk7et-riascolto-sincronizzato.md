@@ -1,5 +1,5 @@
 ---
-column: todo
+column: done
 technical: false
 refs:
   - playback
@@ -11,6 +11,7 @@ drift: null
 proposal: dlpwzchv
 agent: false
 created: 2026-10-27T10:07:36.916Z
+finished: 2026-10-27T10:30:23.806Z
 ---
 # Riascolto sincronizzato
 

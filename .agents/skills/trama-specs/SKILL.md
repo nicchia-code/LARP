@@ -30,15 +30,16 @@ The technologies this project is built, tested and released with, from the devel
 
 ## CI
 
-- GitHub Actions: build and test on a macos-26 runner (chosen by the agent: macos-26 is the GitHub runner image with Xcode for macOS 26)
+- GitHub Actions: on a macos-26 runner; build and test on every push and pull request; on every vX.Y.Z tag, test, build the Release configuration, package a DMG and publish a GitHub Release (chosen by the agent: macos-26 is the GitHub runner image with Xcode for macOS 26)
 
 ## Repository
 
-- GitHub
+- GitHub: private repository; the trusted people who install the app are read-only collaborators
 
 ## Deployment
 
-- Local Xcode build: built and run on the developer's own Mac, no signing for distribution, no notarization
+- Local Xcode build: development builds, built and run on the developer's own Mac
+- GitHub Releases: one Release per vX.Y.Z tag with an ad-hoc signed DMG made with hdiutil, for the developer's Macs and a few trusted people; no notarization, no public distribution, manual updates
 
 ## Notes
 

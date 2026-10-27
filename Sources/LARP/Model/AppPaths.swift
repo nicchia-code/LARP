@@ -23,6 +23,11 @@ enum AppPaths {
         applicationSupportFolder.appending(path: recordingsFolderName, directoryHint: .isDirectory)
     }
 
+    /// `Models/`: the FluidAudio models, downloaded on first use and reused.
+    static var diarizerModelsFolder: URL {
+        applicationSupportFolder.appending(path: "Models", directoryHint: .isDirectory)
+    }
+
     /// `Recordings/<call id>/`
     static func recordingsFolder(callID: UUID) -> URL {
         recordingsFolder.appending(path: callID.uuidString, directoryHint: .isDirectory)

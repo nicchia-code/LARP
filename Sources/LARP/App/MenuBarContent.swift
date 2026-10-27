@@ -1,13 +1,20 @@
 import AppKit
 import SwiftUI
 
-/// Content of the menu bar menu. Recording is not wired yet.
+/// Content of the menu bar menu.
 struct MenuBarContent: View {
+    let recorder: Recorder
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Registra") {
-            // Recording logic is added by the recording Tasks.
+        if recorder.isRecording {
+            Button("Ferma registrazione") {
+                recorder.stopRecording()
+            }
+        } else {
+            Button("Registra") {
+                Task { await recorder.startRecording() }
+            }
         }
 
         Button("Apri archivio") {

@@ -23,13 +23,16 @@ testing:
   - name: Swift Testing
 ci:
   - name: GitHub Actions
-    note: build and test on a macos-26 runner
+    note: on a macos-26 runner; build and test on every push and pull request; on every vX.Y.Z tag, test, build the Release configuration, package a DMG and publish a GitHub Release
     chosenByAgent: macos-26 is the GitHub runner image with Xcode for macOS 26
 repository:
   - name: GitHub
+    note: private repository; the trusted people who install the app are read-only collaborators
 deployment:
   - name: Local Xcode build
-    note: built and run on the developer's own Mac, no signing for distribution, no notarization
+    note: development builds, built and run on the developer's own Mac
+  - name: GitHub Releases
+    note: one Release per vX.Y.Z tag with an ad-hoc signed DMG made with hdiutil, for the developer's Macs and a few trusted people; no notarization, no public distribution, manual updates
 notes: |
   Target: Apple silicon Macs (M1 and later) with macOS 26 or later.
   No cloud and no infrastructure files: everything runs on the Mac.

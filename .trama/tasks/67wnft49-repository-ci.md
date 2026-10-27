@@ -1,5 +1,5 @@
 ---
-column: doing
+column: done
 technical: true
 refs:
   - specs#repository
@@ -7,8 +7,9 @@ refs:
   - specs#testing
 drift: null
 proposal: dlpwzchv
-agent: hf4j40
+agent: false
 created: 2026-10-27T10:07:36.916Z
+finished: 2026-10-27T10:16:29.662Z
 ---
 # Repository e CI
 

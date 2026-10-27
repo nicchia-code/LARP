@@ -1,5 +1,5 @@
 ---
-column: todo
+column: done
 technical: false
 refs:
   - settings
@@ -14,6 +14,7 @@ drift: null
 proposal: dlpwzchv
 agent: false
 created: 2026-10-27T10:07:36.916Z
+finished: 2026-10-27T10:22:40.049Z
 ---
 # Lingua e impostazioni
 

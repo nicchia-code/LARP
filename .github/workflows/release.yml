@@ -1,0 +1,124 @@
+name: Release
+
+# Publishes LARP as a GitHub Release on every tag `vX.Y.Z`. Separate from
+# ci.yml, which keeps running on every push and pull request.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.ref_name }}
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      # Same as the CI. A failing test stops the workflow before anything is
+      # built or published.
+      - name: Test
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild test \
+            -project LARP.xcodeproj \
+            -scheme LARP \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build \
+            -resultBundlePath build/TestResults.xcresult \
+            | tee build/xcodebuild.log
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/TestResults.xcresult
+
+      # Ad-hoc signed (project.yml), not notarized. The version comes from the
+      # tag (v1.2.0 -> 1.2.0) and the build number from the run number. The
+      # generated Config/Info.plist (never committed back) carries literal
+      # versions, so they are patched there before building; signing happens
+      # at build time, after the patch. project.yml is not edited.
+      - name: Build Release
+        run: |
+          set -o pipefail
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Config/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Config/Info.plist
+          xcodebuild build \
+            -project LARP.xcodeproj \
+            -scheme LARP \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/release \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            | tee build/xcodebuild-release.log
+
+      - name: Check the app version
+        run: |
+          APP=build/release/Build/Products/Release/LARP.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "$BUILD_NUMBER"
+          codesign --verify --deep --strict "$APP"
+
+      # Plain DMG: LARP.app and a link to /Applications, no background image
+      # and no custom layout.
+      - name: Create the DMG
+        run: |
+          mkdir -p build/dmg
+          ditto build/release/Build/Products/Release/LARP.app build/dmg/LARP.app
+          ln -s /Applications build/dmg/Applications
+          hdiutil create \
+            -volname LARP \
+            -srcfolder build/dmg \
+            -fs HFS+ \
+            -format UDZO \
+            -ov \
+            "build/LARP-$VERSION.dmg"
+
+      - name: Write the Release text
+        run: |
+          cat > build/release-notes.md <<'EOF'
+          ## Installazione
+
+          1. Scarica `LARP-<versione>.dmg` da questa Release e aprilo.
+          2. Trascina `LARP.app` nella cartella Applicazioni.
+
+          ## Primo avvio
+
+          L'app non è notarizzata, quindi macOS blocca la prima apertura. Per aprirla:
+
+          - da Terminale: `xattr -dr com.apple.quarantine /Applications/LARP.app`, poi avvia l'app;
+          - oppure avvia l'app, poi apri Impostazioni di Sistema → Privacy e sicurezza e premi "Apri comunque".
+
+          ## Aggiornamenti
+
+          Gli aggiornamenti sono manuali: scarica la nuova versione e sostituisci `LARP.app` in Applicazioni. L'app non controlla aggiornamenti. Dopo ogni aggiornamento macOS chiede di nuovo i permessi di microfono e audio di sistema.
+
+          ## Novità
+          EOF
+
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "build/LARP-$VERSION.dmg" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file build/release-notes.md \
+            --generate-notes
