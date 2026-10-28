@@ -55,6 +55,16 @@ final class CaptureFailureAlertPresenter: CaptureFailureAlertPresenting {
     }
 }
 
+/// Shows and hides the warning that the sound of the others cannot be removed from
+/// the microphone. Replaced in tests.
+@MainActor
+protocol EchoCancellationWarningPresenting: AnyObject {
+    /// Shows the warning; it goes away by itself after `EchoCancellationWarningPanelController.duration`.
+    /// Showing it again restarts the countdown.
+    func show()
+    func hide()
+}
+
 /// The proposal: a small panel under the menu bar icon that never takes the focus.
 @MainActor
 final class ProposalPanelController: ProposalPresenting {
@@ -62,7 +72,49 @@ final class ProposalPanelController: ProposalPresenting {
 
     func show(appName: String, accept: @escaping @MainActor () -> Void) {
         hide()
-        let hosting = NSHostingView(rootView: ProposalView(appName: appName, accept: accept))
+        panel = MenuBarPanel.show(ProposalView(appName: appName, accept: accept))
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        panel = nil
+    }
+}
+
+/// The warning about the echo: a small panel under the menu bar icon that never
+/// takes the focus and disappears by itself.
+@MainActor
+final class EchoCancellationWarningPanelController: EchoCancellationWarningPresenting {
+    /// How long the warning stays on screen.
+    static let duration: Duration = .seconds(10)
+    static let message = "Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte."
+
+    private var panel: NSPanel?
+    private var hideTask: Task<Void, Never>?
+
+    func show() {
+        hide()
+        panel = MenuBarPanel.show(EchoCancellationWarningView(message: Self.message))
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.duration)
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
+    }
+
+    func hide() {
+        hideTask?.cancel()
+        hideTask = nil
+        panel?.orderOut(nil)
+        panel = nil
+    }
+}
+
+/// Panels under the menu bar icon that never take the focus.
+@MainActor
+private enum MenuBarPanel {
+    static func show<Content: View>(_ content: Content) -> NSPanel {
+        let hosting = NSHostingView(rootView: content)
         let size = hosting.fittingSize
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
@@ -81,17 +133,12 @@ final class ProposalPanelController: ProposalPresenting {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.setFrameOrigin(origin(for: size))
         panel.orderFrontRegardless()
-        self.panel = panel
-    }
-
-    func hide() {
-        panel?.orderOut(nil)
-        panel = nil
+        return panel
     }
 
     /// Centered under the menu bar icon (the status bar window of this app), or at
     /// the top right of the main screen if the icon cannot be found.
-    private func origin(for size: NSSize) -> NSPoint {
+    private static func origin(for size: NSSize) -> NSPoint {
         let gap: CGFloat = 6
         let statusFrame = NSApp.windows.first { $0.className.contains("StatusBar") }?.frame
         let screen = NSScreen.screens.first { screen in
@@ -116,6 +163,23 @@ private struct ProposalView: View {
             Text("Call rilevata in \(appName)")
             Button("Registra", action: accept)
                 .buttonStyle(.borderedProminent)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .fixedSize()
+    }
+}
+
+private struct EchoCancellationWarningView: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "headphones")
+                .foregroundStyle(.secondary)
+            Text(message)
+                .frame(width: 280, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))

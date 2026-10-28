@@ -25,6 +25,10 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - While the proposal is shown, "Registra" in the menu bar menu accepts the proposal.
 - A missing permission is shown as an alert that names the permission and has a button opening the right pane of System Settings.
 
+## recorder/Recording
+
+- When the sound of the other participants cannot be removed from the microphone, at the start of a recording or after a change of audio devices, a small panel under the menu bar icon that does not steal focus says "Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte." and disappears by itself after 10 seconds.
+
 ## main-window
 
 - Split view: on the left a search field and the list of calls, newest first, each with title, date and duration; on the right the selected call.

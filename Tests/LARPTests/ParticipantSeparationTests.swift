@@ -238,13 +238,18 @@ struct ParticipantSeparatorTests {
         let container = try ArchiveStore.makeContainer(inMemory: true)
         let call = makeCall(in: container.mainContext)
         let gate = Task<Void, Never> { try? await Task.sleep(for: .seconds(30)) }
+        let (diarizing, diarizationStarted) = AsyncStream<Void>.makeStream()
         let diarizer = FakeDiarizer(
-            result: .success([segment("A", 2, 9)]), onDiarize: { await gate.value })
+            result: .success([segment("A", 2, 9)]),
+            onDiarize: {
+                diarizationStarted.yield()
+                await gate.value
+            })
 
         let task = Task { @MainActor in
             try await ParticipantSeparator(diarizer: diarizer).separate(call)
         }
-        try await Task.sleep(for: .milliseconds(50))
+        for await _ in diarizing { break }
         task.cancel()
         gate.cancel()
 

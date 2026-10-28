@@ -21,3 +21,6 @@ The download of the speech model for the chosen transcription language has faile
 
 ### NETWORK_AVAILABLE
 The Mac is connected to the internet again.
+
+### AUDIO_DEVICES_CHANGED
+The microphone or the audio output of the Mac has changed, for example because headphones were plugged in or unplugged.

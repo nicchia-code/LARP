@@ -185,16 +185,25 @@ struct CallTranscriptionTests {
         let harness = try CallHarness(transcriptionRetryDelay: .milliseconds(50))
         defer { harness.cleanUp() }
         harness.transcription.set { $0.fileFailure = FakeTranscriptionFailure() }
-        let call = try harness.insertCall(.transcribing)
+        // The retry of the deleted call is scheduled before the one of the kept call, with the
+        // same wait: once the kept call is tried again, the deleted one would have been.
+        let deleted = try harness.insertCall(.transcribing, startedAt: Date(timeIntervalSince1970: 1_700_001_000))
+        let kept = try harness.insertCall(.transcribing, startedAt: Date(timeIntervalSince1970: 1_700_002_000))
+        let deletedFolder = deleted.recordingsFolderURL
+        let keptFolder = kept.recordingsFolderURL
+        func attempts(in folder: URL) -> Int {
+            harness.transcription.startedFolders.filter { $0 == folder }.count
+        }
 
         await harness.lifecycle.appLaunched()
         await harness.lifecycle.waitUntilTranscriptionIdle()
-        harness.lifecycle.deleteCall(call)
-        let attempts = harness.transcription.transcribedFiles.count
-        try await Task.sleep(for: .milliseconds(200))
+        harness.lifecycle.deleteCall(deleted)
+        let deletedAttempts = attempts(in: deletedFolder)
+        let keptAttempts = attempts(in: keptFolder)
+        #expect(await harness.eventually { attempts(in: keptFolder) > keptAttempts })
 
-        #expect(harness.transcription.transcribedFiles.count == attempts)
-        #expect(harness.lifecycle.failedTranscriptions.isEmpty)
+        #expect(attempts(in: deletedFolder) == deletedAttempts)
+        #expect(!harness.lifecycle.failedTranscriptions.contains(deleted.id))
     }
 
     @Test("a call that was deleted while transcribed does not come back")

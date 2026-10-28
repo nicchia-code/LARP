@@ -29,7 +29,13 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 ## recorder
 
 - Detection of call apps uses the Core Audio process object list (`kAudioHardwarePropertyProcessObjectList`) and each process's `kAudioProcessPropertyIsRunningInput` and bundle identifier, listening for changes instead of polling; helper processes (for example browser helpers) are mapped to their parent app.
-- The microphone is captured with `AVAudioEngine` on the default input device.
+- The microphone is captured with `AVAudioEngine` on the default input device, with voice processing enabled on the input node (`setVoiceProcessingEnabled(true)`) before the engine starts, so that macOS acoustic echo cancellation removes from the microphone what the Mac plays, including the call app.
+- Voice processing is enabled for every recording, whatever the audio output (built-in speakers, external speakers or headphones); the app does not detect the output route.
+- Ducking of other audio is kept to the minimum: `voiceProcessingOtherAudioDuckingConfiguration` with `enableAdvancedDucking` on and `duckingLevel` `.min`.
+- Voice processing automatic gain control is left as macOS sets it (on).
+- The microphone tap uses the input format read after voice processing is enabled; any sample rate or channel count it reports is converted to the 16 kHz mono storage format.
+- When enabling voice processing fails at start, the microphone is captured without it and the recording starts anyway; the user is told as `requirements/ui#recorder/Recording` says.
+- `macos.AUDIO_DEVICES_CHANGED` is the engine's `AVAudioEngineConfigurationChange` notification during a recording; the engine is restarted with voice processing enabled again, and when enabling it fails the microphone is captured without it and the user is told again.
 - The system audio is captured with a Core Audio process tap (`CATapDescription` for all processes except LARP itself, `AudioHardwareCreateProcessTap`, aggregate device), which needs only the system audio recording permission, not screen recording.
 - Permissions are checked before every start: microphone with `AVAudioApplication`/`AVCaptureDevice` authorization, system audio by the tap creation result.
 

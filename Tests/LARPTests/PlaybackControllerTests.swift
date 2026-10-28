@@ -33,6 +33,17 @@ private final class FakePlayer: TrackPlayer {
     }
 }
 
+@MainActor
+private func waitUntil(
+    _ condition: @MainActor () -> Bool, sourceLocation: SourceLocation = #_sourceLocation
+) async {
+    for _ in 0..<400 {
+        if condition() { return }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    Issue.record("Condition not reached in time", sourceLocation: sourceLocation)
+}
+
 @Suite("PlaybackController")
 @MainActor
 struct PlaybackControllerTests {
@@ -200,7 +211,7 @@ struct PlaybackControllerTests {
         #expect(controller.currentLineIndex == 0)
 
         player.currentTime = 6
-        try await Task.sleep(for: .milliseconds(200))
+        await waitUntil { controller.currentTime == 6 }
         #expect(controller.currentLineIndex == 1)
         #expect(controller.currentTime == 6)
         controller.stop()

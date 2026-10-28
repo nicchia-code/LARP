@@ -24,7 +24,9 @@ struct LARPApp: App {
             context: modelContainer.mainContext,
             languages: TranscriptionLanguageController.shared,
             chosenLanguage: { TranscriptionLanguageController.shared.language.rawValue },
-            capture: CallAudioCapture(),
+            capture: CallAudioCapture(echoCancellationChanged: { available in
+                Task { @MainActor in Recorder.shared.echoCancellationChanged(available: available) }
+            }),
             transcription: SpeechTranscriptionService(),
             captureFailureAlerts: CaptureFailureAlertPresenter(),
             endRecorderRecording: { Recorder.shared.stopRecording() },

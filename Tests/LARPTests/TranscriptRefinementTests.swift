@@ -11,10 +11,13 @@ import Testing
 private final class FakeAssistantCheck: AssistantChecking {
     private let reached = Mutex(true)
     private let calls = Mutex(0)
+    private let completed = Mutex(0)
     private let gate = Mutex<CheckedContinuation<Void, Never>?>(nil)
     private let held = Mutex(false)
 
     var callCount: Int { calls.withLock { $0 } }
+    /// How many checks have given their answer.
+    var completedCount: Int { completed.withLock { $0 } }
 
     func setReached(_ value: Bool) { reached.withLock { $0 = value } }
 
@@ -38,6 +41,7 @@ private final class FakeAssistantCheck: AssistantChecking {
                 }
             }
         }
+        completed.withLock { $0 += 1 }
         return reached.withLock { $0 }
     }
 }
@@ -112,7 +116,7 @@ struct TranscriptRefinementMachineTests {
         #expect(controller.state == .off)
         #expect(defaults.bool(forKey: SettingsKey.transcriptRefinement) == false)
         assistant.release()
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil { assistant.completedCount == 1 }
         #expect(controller.state == .off)
     }
 
@@ -235,7 +239,7 @@ private final class FakeAgents {
 
     /// An agent that reads everything and never answers.
     func silentAgent() throws -> URL {
-        try script("silent.sh", "cat > /dev/null")
+        try script("silent.sh", #"cat >> "$(dirname "$0")/received.log""#)
     }
 
     /// An agent that answers `initialize` with a JSON-RPC error.
@@ -325,7 +329,7 @@ struct ACPClientTests {
         let client = try ACPClient.launch(
             executable: try agents.silentAgent(), arguments: [], workingDirectory: agents.directory)
         let request = Task { try await client.initialize() }
-        try await Task.sleep(for: .milliseconds(100))
+        #expect(await waitForLog(agents, containing: "\"method\":\"initialize\""))
         client.terminate()
         await #expect(throws: ACPError.processEnded) {
             try await request.value

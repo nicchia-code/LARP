@@ -4,6 +4,17 @@ import Testing
 
 @testable import LARP
 
+@MainActor
+private func waitUntil(
+    _ condition: @MainActor () -> Bool, sourceLocation: SourceLocation = #_sourceLocation
+) async {
+    for _ in 0..<1000 {
+        if condition() { return }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("Condition not reached in time", sourceLocation: sourceLocation)
+}
+
 @Suite("EngineTrackPlayer", .serialized)
 @MainActor
 struct EngineTrackPlayerTests {
@@ -50,7 +61,7 @@ struct EngineTrackPlayerTests {
 
         var finished = 0
         player.start(at: 0.1) { finished += 1 }
-        try await Task.sleep(for: .seconds(2))
+        await waitUntil { finished > 0 }
         #expect(finished == 1)
     }
 

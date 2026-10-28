@@ -468,8 +468,7 @@ struct CallRefinementTests {
         refiner.setBehavior { _ in validAnswer }
         await harness.lifecycle.appLaunched()
 
-        #expect(await harness.eventually { call.state == .ready })
-        #expect(refiner.cancellations == 1)
+        #expect(await harness.eventually { call.state == .ready && refiner.cancellations == 1 })
     }
 
     @Test("refine is offered only with refinement on, on a Ready call or one awaiting a retry")
@@ -606,6 +605,19 @@ struct OmpTranscriptRefinerTests {
             return url
         }
 
+        /// Waits until the agent process has started and written its process ID.
+        func processStarted() async -> Bool {
+            for _ in 0..<400 {
+                if let text = try? String(contentsOf: pidFile, encoding: .utf8),
+                    Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
+                {
+                    return true
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return false
+        }
+
         func processEnded() async -> Bool {
             for _ in 0..<400 {
                 if let text = try? String(contentsOf: pidFile, encoding: .utf8),
@@ -652,7 +664,7 @@ struct OmpTranscriptRefinerTests {
         let scripts = try Scripts()
         let refiner = OmpTranscriptRefiner(locator: FixedLocator(url: try scripts.agent(answers: false)))
         let task = Task { try await refiner.refine(prompt: "x") }
-        try await Task.sleep(for: .milliseconds(500))
+        #expect(await scripts.processStarted())
 
         task.cancel()
 

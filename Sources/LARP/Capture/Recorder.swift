@@ -32,6 +32,7 @@ final class Recorder {
     @ObservationIgnored private let permissions: any RecordingPermissions
     @ObservationIgnored private let proposals: any ProposalPresenting
     @ObservationIgnored private let alerts: any PermissionAlertPresenting
+    @ObservationIgnored private let echoWarnings: any EchoCancellationWarningPresenting
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
@@ -42,23 +43,26 @@ final class Recorder {
         permissions: any RecordingPermissions,
         proposals: any ProposalPresenting,
         alerts: any PermissionAlertPresenting,
+        echoWarnings: any EchoCancellationWarningPresenting,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.micSource = micSource
         self.permissions = permissions
         self.proposals = proposals
         self.alerts = alerts
+        self.echoWarnings = echoWarnings
         self.now = now
         (events, eventContinuation) = AsyncStream<RecorderEvent>.makeStream(bufferingPolicy: .unbounded)
     }
 
     /// The app's recorder, wired to Core Audio, the system permissions, the
-    /// proposal panel and the permission alert.
+    /// proposal panel, the permission alert and the echo cancellation warning.
     static let shared = Recorder(
         micSource: CoreAudioCallAppMicSource(),
         permissions: SystemRecordingPermissions(),
         proposals: ProposalPanelController(),
-        alerts: PermissionAlertPresenter()
+        alerts: PermissionAlertPresenter(),
+        echoWarnings: EchoCancellationWarningPanelController()
     )
 
     var isRecording: Bool {
@@ -123,6 +127,20 @@ final class Recorder {
         endRecording()
     }
 
+    /// The microphone capture reports whether the sound of the others is removed from
+    /// the microphone: at the start of a recording and after every
+    /// `macos.AUDIO_DEVICES_CHANGED` (the recording goes on with the new microphone or
+    /// output, Recording → Recording). When it is not, the recording goes on anyway and
+    /// the user is told to use headphones; otherwise a warning still shown goes away.
+    func echoCancellationChanged(available: Bool) {
+        guard isRecording else { return }
+        if available {
+            echoWarnings.hide()
+        } else {
+            echoWarnings.show()
+        }
+    }
+
     // MARK: - Transitions
 
     /// Checks the permissions, then starts a recording tied to the app of the
@@ -168,6 +186,7 @@ final class Recorder {
 
     private func endRecording() {
         tickerTask?.cancel()
+        echoWarnings.hide()
         tickerTask = nil
         state = .idle
         elapsedSeconds = 0

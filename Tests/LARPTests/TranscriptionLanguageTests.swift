@@ -11,6 +11,7 @@ private final class FakeSpeechModels: SpeechModels {
     private let installed: Mutex<Set<String>>
     private let installBehavior: Mutex<@Sendable (String) async throws -> Void>
     private let installs = Mutex<[String]>([])
+    private let completed = Mutex(0)
 
     init(installed: Set<String> = [], install: @escaping @Sendable (String) async throws -> Void = { _ in }) {
         self.installed = Mutex(installed)
@@ -18,6 +19,8 @@ private final class FakeSpeechModels: SpeechModels {
     }
 
     var installCalls: [String] { installs.withLock { $0 } }
+    /// How many installations ran to their end without failing.
+    var completedInstalls: Int { completed.withLock { $0 } }
 
     func setInstall(_ behavior: @escaping @Sendable (String) async throws -> Void) {
         installBehavior.withLock { $0 = behavior }
@@ -32,6 +35,7 @@ private final class FakeSpeechModels: SpeechModels {
         let behavior = installBehavior.withLock { $0 }
         try await behavior(language)
         _ = installed.withLock { $0.insert(language) }
+        completed.withLock { $0 += 1 }
     }
 }
 
@@ -54,10 +58,33 @@ private actor Gate {
     }
 }
 
+/// A network whose events the test emits. It also counts how many times the
+/// consumer asked for the next event: that happens only after it has handled
+/// the previous one.
 private final class FakeNetwork: NetworkAvailabilityEvents {
     private let broadcaster = EventBroadcaster<Void>()
-    var availableEvents: AsyncStream<Void> { broadcaster.stream() }
+    private let pulls = Mutex(0)
+
+    var requestedEvents: Int { pulls.withLock { $0 } }
+
+    var availableEvents: AsyncStream<Void> {
+        let source = EventSource(broadcaster.stream().makeAsyncIterator())
+        return AsyncStream(unfolding: {
+            self.pulls.withLock { $0 += 1 }
+            return await source.next()
+        })
+    }
+
     func returnOnline() { broadcaster.emit(()) }
+}
+
+/// Hands the events of one stream to the single consumer that pulls them.
+private final class EventSource: @unchecked Sendable {
+    private var iterator: AsyncStream<Void>.Iterator
+
+    init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
+
+    func next() async -> Void? { await iterator.next() }
 }
 
 private final class FakeLoginItem: LoginItem {
@@ -122,7 +149,8 @@ struct TranscriptionLanguageTests {
             defaults: makeDefaults(), models: models, network: FakeNetwork())
         var events = controller.languageReady.makeAsyncIterator()
         controller.start()
-        await waitUntil { controller.status == .downloading }
+        await waitUntil { !models.installCalls.isEmpty }
+        #expect(controller.status == .downloading)
         #expect(models.installCalls == ["it-IT"])
         await gate.open()
         await controller.waitUntilIdle()
@@ -167,7 +195,7 @@ struct TranscriptionLanguageTests {
         controller.start()
         await controller.waitUntilIdle()
         network.returnOnline()
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil { network.requestedEvents >= 2 }
         #expect(controller.status == .ready)
         #expect(models.installCalls.isEmpty)
     }
@@ -214,7 +242,8 @@ struct TranscriptionLanguageTests {
         #expect(controller.status == .ready)
 
         controller.choose(.english)
-        await waitUntil { controller.status == .downloading }
+        await waitUntil { !models.installCalls.isEmpty }
+        #expect(controller.status == .downloading)
         #expect(models.installCalls == ["en-US"])
         await gate.open()
         await controller.waitUntilIdle()
@@ -242,13 +271,13 @@ struct TranscriptionLanguageTests {
         let controller = TranscriptionLanguageController(
             defaults: makeDefaults(), models: models, network: FakeNetwork())
         controller.start()
-        await waitUntil { controller.status == .downloading }
+        await waitUntil { !models.installCalls.isEmpty }
 
         controller.choose(.english)
         await controller.waitUntilIdle()
         #expect(controller.status == .ready)
         await gate.open()
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil { models.completedInstalls == 1 }
         #expect(controller.language == .english)
         #expect(controller.status == .ready)
     }

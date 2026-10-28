@@ -30,6 +30,17 @@ private final class FakeAlerts: PermissionAlertPresenting {
     func present(missing permission: RecordingPermission) { presented.append(permission) }
 }
 
+@MainActor
+private final class FakeEchoWarnings: EchoCancellationWarningPresenting {
+    private(set) var showCount = 0
+    private(set) var isShown = false
+    func show() {
+        showCount += 1
+        isShown = true
+    }
+    func hide() { isShown = false }
+}
+
 private struct FakePermissions: RecordingPermissions {
     var missing: RecordingPermission?
     func missingPermission() async -> RecordingPermission? { missing }
@@ -45,13 +56,15 @@ private struct Fixture {
     let recorder: Recorder
     let proposals = FakeProposals()
     let alerts = FakeAlerts()
+    let echoWarnings = FakeEchoWarnings()
 
     init(missing: RecordingPermission? = nil, source: any CallAppMicSource = FakeMicSource(stream: AsyncStream { _ in })) {
         recorder = Recorder(
             micSource: source,
             permissions: FakePermissions(missing: missing),
             proposals: proposals,
-            alerts: alerts
+            alerts: alerts,
+            echoWarnings: echoWarnings
         )
     }
 }
@@ -225,6 +238,56 @@ struct RecorderTests {
         let f = Fixture()
         f.recorder.stopRecording()
         #expect(f.recorder.state == .idle)
+    }
+
+    // MARK: Echo cancellation
+
+    @Test func recordingStartedWithoutEchoCancellationWarnsAndKeepsRecording() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.echoCancellationChanged(available: false)
+        #expect(f.echoWarnings.isShown)
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func recordingStartedWithEchoCancellationShowsNoWarning() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        await f.recorder.acceptProposal()
+        f.recorder.echoCancellationChanged(available: true)
+        #expect(f.echoWarnings.showCount == 0)
+    }
+
+    @Test func audioDevicesChangedWithoutEchoCancellationWarnsAgain() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.echoCancellationChanged(available: false)
+        #expect(f.echoWarnings.showCount == 2)
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func audioDevicesChangedWithEchoCancellationRemovesTheWarning() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.echoCancellationChanged(available: true)
+        #expect(!f.echoWarnings.isShown)
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func stoppingTheRecordingHidesTheWarning() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.stopRecording()
+        #expect(!f.echoWarnings.isShown)
+    }
+
+    @Test func echoCancellationReportOutsideARecordingIsIgnored() {
+        let f = Fixture()
+        f.recorder.echoCancellationChanged(available: false)
+        #expect(f.echoWarnings.showCount == 0)
     }
 
     // MARK: Source

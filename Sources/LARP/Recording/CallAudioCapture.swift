@@ -11,14 +11,20 @@ final class CallAudioCapture: AudioCapturing {
     }
 
     private let session = Mutex<Session?>(nil)
+    private let echoCancellationChanged: @Sendable (Bool) -> Void
 
-    init() {}
+    /// `echoCancellationChanged` is called when the microphone starts and after every
+    /// restart caused by a change of microphone or audio output, with whether the
+    /// sound of the others is removed from the microphone. It may run on any thread.
+    init(echoCancellationChanged: @escaping @Sendable (Bool) -> Void = { _ in }) {
+        self.echoCancellationChanged = echoCancellationChanged
+    }
 
     func start(into folder: URL, sink: (any AudioBufferSink)?) async throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let micPipeline = try TrackPipeline(track: .microphone, folder: folder, sink: sink)
         let systemPipeline = try TrackPipeline(track: .system, folder: folder, sink: sink)
-        let microphone = MicrophoneCapture(pipeline: micPipeline)
+        let microphone = MicrophoneCapture(pipeline: micPipeline, echoCancellationChanged: echoCancellationChanged)
         let system = SystemAudioTap(pipeline: systemPipeline)
         do {
             try system.start()
