@@ -36,6 +36,7 @@ jobs:
             -project LARP.xcodeproj \
             -scheme LARP \
             -destination 'platform=macOS,arch=arm64' \
+            ARCHS=arm64 \
             -derivedDataPath build \
             -resultBundlePath build/TestResults.xcresult \
             | tee build/xcodebuild.log
@@ -64,14 +65,18 @@ jobs:
             -scheme LARP \
             -configuration Release \
             -destination 'platform=macOS,arch=arm64' \
+            ARCHS=arm64 \
             -derivedDataPath build/release \
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             | tee build/xcodebuild-release.log
 
-      - name: Check the app version
+      # The app is Apple silicon only: the executable must contain arm64 alone.
+      # Otherwise the workflow stops here and nothing is published.
+      - name: Check the app version, architecture and signature
         run: |
           APP=build/release/Build/Products/Release/LARP.app
+          test "$(lipo -archs "$APP/Contents/MacOS/LARP")" = "arm64"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "$BUILD_NUMBER"
           codesign --verify --deep --strict "$APP"

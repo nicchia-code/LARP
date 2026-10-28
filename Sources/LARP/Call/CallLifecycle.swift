@@ -35,6 +35,10 @@ extension Notification {
 final class CallLifecycle {
     private static let logger = Logger(subsystem: "com.larp.LARP", category: "call")
 
+    /// Owned, not only reached through `context`: background work (transcription,
+    /// separation, refinement) may still be ending when everything else lets go of
+    /// the container, and a context whose container is gone traps on its next fetch.
+    @ObservationIgnored let container: ModelContainer
     @ObservationIgnored let context: ModelContext
     @ObservationIgnored let languages: any LanguageAvailability
     /// The language chosen in the settings, read when a recording starts.
@@ -79,7 +83,7 @@ final class CallLifecycle {
     @ObservationIgnored private var eventTasks: [Task<Void, Never>] = []
 
     init(
-        context: ModelContext,
+        container: ModelContainer,
         languages: any LanguageAvailability,
         chosenLanguage: @escaping @MainActor () -> String,
         capture: any AudioCapturing,
@@ -92,7 +96,8 @@ final class CallLifecycle {
         refinementIsOn: @escaping @MainActor () -> Bool = { false },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.context = context
+        self.container = container
+        self.context = container.mainContext
         self.languages = languages
         self.chosenLanguage = chosenLanguage
         self.capture = capture

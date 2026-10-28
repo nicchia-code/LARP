@@ -4,6 +4,32 @@ import Synchronization
 
 @testable import LARP
 
+/// Holds work until the test opens it. The work does not notice cancellation while
+/// it waits: it is how a test makes background work end *after* its call was deleted,
+/// with no time involved.
+final class WorkGate: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state -> Bool in
+                if !state.isOpen { state.waiters.append(continuation) }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.isOpen = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+}
+
 /// A `LanguageAvailability` whose ready languages are controlled by the test.
 final class FakeLanguages: LanguageAvailability {
     private let ready: Mutex<Set<String>>
@@ -130,6 +156,9 @@ final class FakeTranscription: TranscriptionService {
         var fileLines: [SpeakerKind: [TranscribedLine]] = [:]
         /// Files wait until the task is cancelled.
         var blocksFiles = false
+        /// Files wait for the gate, whether or not the task is cancelled, then end as
+        /// scripted (the failure, or the lines).
+        var fileGate: WorkGate?
         var fileFailure: (any Error)?
         var transcribedFiles: [URL] = []
         var cancelledFiles = 0
@@ -158,11 +187,12 @@ final class FakeTranscription: TranscriptionService {
     }
 
     func transcribeFile(at url: URL, speaker: SpeakerKind, language: String) async throws -> [TranscribedLine] {
-        let (lines, blocks, failure) = state.withLock { state in
+        let (lines, blocks, failure, gate) = state.withLock { state in
             state.transcribedFiles.append(url)
             if speaker == .me { state.startedFolders.append(url.deletingLastPathComponent()) }
-            return (state.fileLines[speaker] ?? [], state.blocksFiles, state.fileFailure)
+            return (state.fileLines[speaker] ?? [], state.blocksFiles, state.fileFailure, state.fileGate)
         }
+        await gate?.wait()
         if blocks {
             do {
                 try await Task.sleep(for: .seconds(120))
@@ -183,6 +213,8 @@ final class FakeSeparator: ParticipantSeparating {
         case fail
         /// Waits until cancelled.
         case hang
+        /// Waits for the gate, whether or not it is cancelled, then fails or succeeds.
+        case held(WorkGate, fails: Bool)
     }
 
     private let state = Mutex<(behavior: Behavior, started: [UUID], cancelled: Int)>((.succeed, [], 0))
@@ -203,6 +235,9 @@ final class FakeSeparator: ParticipantSeparating {
         switch behavior {
         case .succeed: return
         case .fail: throw FakeTranscriptionFailure()
+        case .held(let gate, let fails):
+            await gate.wait()
+            if fails { throw FakeTranscriptionFailure() }
         case .hang:
             do {
                 try await Task.sleep(for: .seconds(120))
@@ -267,7 +302,7 @@ struct CallHarness {
         let clock = Clock(Date(timeIntervalSince1970: 1_800_000_000))
         self.clock = clock
         lifecycle = CallLifecycle(
-            context: container.mainContext,
+            container: container,
             languages: languages,
             chosenLanguage: { chosenLanguage },
             capture: capture,

@@ -32,6 +32,7 @@ jobs:
             -project LARP.xcodeproj \
             -scheme LARP \
             -destination 'platform=macOS,arch=arm64' \
+            ARCHS=arm64 \
             -derivedDataPath build \
             -resultBundlePath build/TestResults.xcresult \
             | tee build/xcodebuild.log

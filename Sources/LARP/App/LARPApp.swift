@@ -21,7 +21,7 @@ struct LARPApp: App {
         TranscriptRefinementController.shared.appLaunched()
         // The call machine reacts to the recorder and to the language readiness.
         callLifecycle = CallLifecycle(
-            context: modelContainer.mainContext,
+            container: modelContainer,
             languages: TranscriptionLanguageController.shared,
             chosenLanguage: { TranscriptionLanguageController.shared.language.rawValue },
             capture: CallAudioCapture(events: { event in

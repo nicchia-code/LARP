@@ -84,8 +84,17 @@ extension CallLifecycle {
     }
 
     /// Ends the refinement of the call at once, if running: its process is terminated.
+    /// Its task stays registered until it has ended, so `waitUntilRefinementIdle()`
+    /// covers it.
     func cancelRefinement(of callID: UUID) {
-        runningRefinements.removeValue(forKey: callID)?.task.cancel()
+        runningRefinements[callID]?.task.cancel()
+    }
+
+    /// Resolves when no refinement is running any more, the cancelled ones included.
+    func waitUntilRefinementIdle() async {
+        while let running = runningRefinements.values.first {
+            await running.task.value
+        }
     }
 
     // MARK: Events

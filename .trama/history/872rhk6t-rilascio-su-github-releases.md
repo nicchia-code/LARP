@@ -1,9 +1,10 @@
 ---
 created: 2026-10-27T12:12:25.253Z
-updated: 2026-10-27T12:12:25.253Z
+updated: 2026-10-28T17:44:26.892Z
 summary: A ogni tag vX.Y.Z un workflow esegue i test e pubblica LARP come Release con un DMG semplice, firmato ad-hoc e senza notarizzazione.
 tasks:
   - rcrl8gfj
+  - h5r5kfsd
 ---
 # Rilascio su GitHub Releases
 

@@ -68,12 +68,13 @@ extension CallLifecycle {
         runningTranscription = (id, task)
         defer { runningTranscription = nil }
 
+        // Deleting the call cancels the task: whatever it ends with (an error, or lines
+        // it produced before noticing) is dropped without reading or writing the call.
         let lines: [TranscribedLine]
         do {
             lines = try await task.value
         } catch {
-            // Deleting the call cancels the task: nothing to report then.
-            if !(error is CancellationError), self.call(id: id) != nil {
+            if !task.isCancelled, !(error is CancellationError), self.call(id: id) != nil {
                 // The call shows the failure and is transcribed again after a wait.
                 Self.logger.error("Transcription failed: \(error.localizedDescription, privacy: .public)")
                 failedTranscriptions.insert(id)
@@ -82,8 +83,7 @@ extension CallLifecycle {
             return
         }
 
-        // The call may have been deleted while the transcription was running.
-        guard let call = self.call(id: id), call.state == .transcribing else { return }
+        guard !task.isCancelled, let call = self.call(id: id), call.state == .transcribing else { return }
         failedTranscriptions.remove(id)
         for line in lines.sorted(by: { $0.start < $1.start }) {
             call.lines.append(

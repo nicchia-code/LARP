@@ -13,9 +13,10 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MACOSX_DEPLOYMENT_TARGET: "26.0"
-    # Apple silicon only (M1 and later).
+    # Apple silicon only (M1 and later). This covers the LARP project; the Swift Package
+    # Manager dependencies are separate projects that do not inherit it, so every
+    # xcodebuild invocation (CI and release workflows) also passes ARCHS=arm64.
     ARCHS: arm64
-    EXCLUDE_ARCHS: x86_64
     ONLY_ACTIVE_ARCH: NO
     # Signed for local execution only: ad-hoc by default. To use a personal team,
     # set CODE_SIGN_STYLE: Automatic, CODE_SIGN_IDENTITY: "Apple Development"

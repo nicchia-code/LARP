@@ -16,12 +16,14 @@ extension CallLifecycle {
         let task = Task {
             do {
                 try await separator.separate(call)
+                try Task.checkCancellation()
                 finishSeparation(callID: id, failed: false)
-            } catch is CancellationError {
-                // Cancelled or deleted: not a failure.
             } catch {
-                Self.logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
-                finishSeparation(callID: id, failed: true)
+                // Stopped (deleted, replaced): not a failure, and the call is left alone.
+                if !Task.isCancelled && !(error is CancellationError) {
+                    Self.logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
+                    finishSeparation(callID: id, failed: true)
+                }
             }
             if runningSeparations[id]?.token == token {
                 runningSeparations[id] = nil
@@ -35,9 +37,17 @@ extension CallLifecycle {
         apply(failed ? .separationFailed : .participantsSeparated(refinementOn: refinementIsOn()), to: call)
     }
 
-    /// Stops the separation of the call, if running.
+    /// Stops the separation of the call, if running. Its task stays registered until
+    /// it has ended, so `waitUntilSeparationIdle()` covers it.
     func cancelSeparation(of callID: UUID) {
-        runningSeparations.removeValue(forKey: callID)?.task.cancel()
+        runningSeparations[callID]?.task.cancel()
+    }
+
+    /// Resolves when no separation is running any more, the cancelled ones included.
+    func waitUntilSeparationIdle() async {
+        while let running = runningSeparations.values.first {
+            await running.task.value
+        }
     }
 
     /// `macos.NETWORK_AVAILABLE`: the calls that wait to try the separation or the

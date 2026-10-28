@@ -21,6 +21,11 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - Audio is flushed to disk at least every 5 seconds, so a crash or power loss loses at most the last 5 seconds.
 - At launch, any call still in Recording is closed at its last saved audio before anything else happens.
 
+## call
+
+- Deleting a call while its transcription, separation of participants or refinement runs in the background never crashes the app: the work in progress stops and, once the call is deleted, never reads or writes that call, its lines or its participants again.
+- An automated test deletes a call during each of these background works and passes on every run, on the CI runner as on the developer's Mac.
+
 ## recorder/Recording
 
 - Without headphones, with a call app playing the other participants through the Mac's built-in speakers at normal volume, the other participants are not audible in the microphone track and produce no "Me" lines; this is verified on a real Mac, since automated tests cannot play through speakers.
