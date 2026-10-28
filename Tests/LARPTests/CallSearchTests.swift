@@ -33,6 +33,17 @@ struct CallSearchTests {
         #expect(!CallSearch.matches(call, query: "paese"))
     }
 
+    @Test("it finds a call without title and call app by the word Registrazione, one with a call app by Call")
+    func matchesDefaultTitle() {
+        let recording = makeCall(title: nil)
+        let appCall = makeCall(title: nil)
+        appCall.callAppName = "Zoom"
+        #expect(CallSearch.matches(recording, query: "registrazione"))
+        #expect(!CallSearch.matches(recording, query: "call del"))
+        #expect(CallSearch.matches(appCall, query: "Call del"))
+        #expect(!CallSearch.matches(appCall, query: "Registrazione"))
+    }
+
     @Test("it matches the transcript text ignoring case and accents")
     func matchesTranscriptText() {
         let call = makeCall(title: "Weekly", lines: ["Ciao a tutti", "Perché no?"])

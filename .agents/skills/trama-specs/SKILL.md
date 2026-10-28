@@ -17,6 +17,7 @@ The technologies this project is built, tested and released with, from the devel
 - Core Audio process taps (chosen by the agent: captures the system audio of every call app with only the system audio recording permission, without screen recording)
 - AVFoundation (chosen by the agent: standard API for microphone capture, audio files and playback)
 - FluidAudio: on-device speaker diarization on Core ML
+- WebRTC audio processing (AEC3): echo canceller that removes the other participants from the microphone during a recording, with the system audio as reference; built from source as a pinned Swift Package Manager C++ target; replaces macOS voice processing, which lowered the volume of the call
 - ServiceManagement (chosen by the agent: SMAppService is the system API for launch at login)
 - XcodeGen (chosen by the agent: keeps the Xcode project as a readable, versioned project.yml)
 - omp (Agent Client Protocol): transcript refinement through the omp installed by the user, started as `omp acp` over stdio with the model configured in omp; not bundled with the app

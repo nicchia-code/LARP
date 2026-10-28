@@ -65,6 +65,24 @@ protocol EchoCancellationWarningPresenting: AnyObject {
     func hide()
 }
 
+/// Shows and hides the notice that a recording started by hand records only the
+/// microphone. Replaced in tests.
+@MainActor
+protocol SystemAudioUnavailablePresenting: AnyObject {
+    /// Shows the notice; it goes away by itself after `SystemAudioUnavailablePanelController.duration`.
+    /// `permissionMissing` adds a button opening the system audio pane of System Settings.
+    func show(permissionMissing: Bool)
+    func hide()
+}
+
+/// Shows and hides the notice that the microphone is lost. Replaced in tests.
+@MainActor
+protocol MicrophoneLostPresenting: AnyObject {
+    /// Shows the notice; it stays until `hide()`.
+    func show()
+    func hide()
+}
+
 /// The proposal: a small panel under the menu bar icon that never takes the focus.
 @MainActor
 final class ProposalPanelController: ProposalPresenting {
@@ -105,6 +123,59 @@ final class EchoCancellationWarningPanelController: EchoCancellationWarningPrese
     func hide() {
         hideTask?.cancel()
         hideTask = nil
+        panel?.orderOut(nil)
+        panel = nil
+    }
+}
+
+/// The notice that only the microphone is recorded: a small panel under the menu bar
+/// icon that never takes the focus and disappears by itself.
+@MainActor
+final class SystemAudioUnavailablePanelController: SystemAudioUnavailablePresenting {
+    /// How long the notice stays on screen.
+    static let duration: Duration = .seconds(10)
+    static let message = "Audio di sistema non disponibile: si registra solo il microfono."
+
+    private var panel: NSPanel?
+    private var hideTask: Task<Void, Never>?
+
+    func show(permissionMissing: Bool) {
+        hide()
+        var openSettings: (@MainActor () -> Void)?
+        if permissionMissing {
+            openSettings = { NSWorkspace.shared.open(RecordingPermission.systemAudio.settingsURL) }
+        }
+        panel = MenuBarPanel.show(
+            NoticeView(symbol: "speaker.slash", message: Self.message, buttonTitle: "Apri Impostazioni di Sistema", action: openSettings))
+        hideTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.duration)
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
+    }
+
+    func hide() {
+        hideTask?.cancel()
+        hideTask = nil
+        panel?.orderOut(nil)
+        panel = nil
+    }
+}
+
+/// The notice that the microphone is lost: a small panel under the menu bar icon that
+/// never takes the focus and stays until it is hidden.
+@MainActor
+final class MicrophoneLostPanelController: MicrophoneLostPresenting {
+    static let message = "Microfono non disponibile: la registrazione prosegue senza la tua voce."
+
+    private var panel: NSPanel?
+
+    func show() {
+        hide()
+        panel = MenuBarPanel.show(NoticeView(symbol: "mic.slash", message: Self.message))
+    }
+
+    func hide() {
         panel?.orderOut(nil)
         panel = nil
     }
@@ -180,6 +251,30 @@ private struct EchoCancellationWarningView: View {
             Text(message)
                 .frame(width: 280, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .fixedSize()
+    }
+}
+
+/// A notice with an icon, a text and optionally a button.
+private struct NoticeView: View {
+    let symbol: String
+    let message: String
+    var buttonTitle: String?
+    var action: (@MainActor () -> Void)?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+            Text(message)
+                .frame(width: 280, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            if let buttonTitle, let action {
+                Button(buttonTitle, action: action)
+            }
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))

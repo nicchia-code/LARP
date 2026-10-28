@@ -12,6 +12,8 @@ frameworks:
     chosenByAgent: standard API for microphone capture, audio files and playback
   - name: FluidAudio
     note: on-device speaker diarization on Core ML
+  - name: WebRTC audio processing (AEC3)
+    note: echo canceller that removes the other participants from the microphone during a recording, with the system audio as reference; built from source as a pinned Swift Package Manager C++ target; replaces macOS voice processing, which lowered the volume of the call
   - name: ServiceManagement
     chosenByAgent: SMAppService is the system API for launch at login
   - name: XcodeGen

@@ -28,6 +28,10 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
     exactVersion: 0.17.7
+  # WebRTC's audio processing module, built from source (see its README.md): used only for
+  # its echo canceller, AEC3. Pinned to one revision of WebRTC, which lives in the package.
+  WebRTCAudioProcessing:
+    path: Packages/WebRTCAudioProcessing
 
 targets:
   LARP:
@@ -40,6 +44,8 @@ targets:
     dependencies:
       - package: FluidAudio
         product: FluidAudio
+      - package: WebRTCAudioProcessing
+        product: WebRTCAudioProcessing
     settings:
       base:
         PRODUCT_NAME: LARP

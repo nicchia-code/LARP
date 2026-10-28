@@ -8,8 +8,14 @@ import Foundation
 /// screen recording one.
 final class SystemAudioTap: @unchecked Sendable {
     struct TapError: LocalizedError, CustomStringConvertible {
+        /// The operation that failed when the process tap could not be created, which
+        /// is what the system does when the system audio recording permission is missing.
+        static let createTapOperation = "create process tap"
+
         let operation: String
         let status: OSStatus
+        /// The tap could not be created: the system audio recording permission is missing.
+        var isPermissionDenied: Bool { operation == Self.createTapOperation }
         var description: String { "\(operation) failed (OSStatus \(status))" }
         var errorDescription: String? {
             "Impossibile catturare l'audio di sistema (\(operation), errore \(status)). "
@@ -18,13 +24,16 @@ final class SystemAudioTap: @unchecked Sendable {
     }
 
     private let pipeline: TrackPipeline
+    /// Also gets the system audio, as the reference signal of the echo canceller.
+    private let reference: (any AudioInput)?
     private let queue = DispatchQueue(label: "com.larp.LARP.systemTap", qos: .userInteractive)
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
 
-    init(pipeline: TrackPipeline) {
+    init(pipeline: TrackPipeline, reference: (any AudioInput)? = nil) {
         self.pipeline = pipeline
+        self.reference = reference
     }
 
     func start() throws {
@@ -69,7 +78,7 @@ final class SystemAudioTap: @unchecked Sendable {
         description.name = "LARP system audio"
         description.muteBehavior = .unmuted
         description.isPrivate = true
-        try Self.check(AudioHardwareCreateProcessTap(description, &tapID), "create process tap")
+        try Self.check(AudioHardwareCreateProcessTap(description, &tapID), Self.TapError.createTapOperation)
     }
 
     private func createAggregateDevice() throws {
@@ -105,11 +114,13 @@ final class SystemAudioTap: @unchecked Sendable {
         }
 
         try Self.check(
-            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [pipeline] _, input, _, _, _ in
+            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [pipeline, reference] _, input, _, _, _ in
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: input, deallocator: nil) else {
                     return
                 }
-                pipeline.ingest(borrowing: buffer)
+                let arrival = ProcessInfo.processInfo.systemUptime
+                pipeline.ingest(borrowing: buffer, arrival: arrival)
+                reference?.ingest(borrowing: buffer, arrival: arrival)
             }, "create IO proc")
         try Self.check(AudioDeviceStart(aggregateID, ioProcID), "start aggregate device")
     }

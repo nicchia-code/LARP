@@ -3,15 +3,31 @@ import Dispatch
 import Foundation
 import os
 
+/// Where a capture hands the audio it captures. Called from an audio thread.
+protocol AudioInput: Sendable {
+    /// Takes the audio of `buffer`, which the caller may reuse as soon as this returns.
+    /// `arrival` is the system uptime at which the last frame of `buffer` was captured.
+    func ingest(borrowing buffer: AVAudioPCMBuffer, arrival: TimeInterval)
+}
+
+extension AudioInput {
+    /// `ingest(borrowing:arrival:)` for a buffer that has just been captured.
+    func ingest(borrowing buffer: AVAudioPCMBuffer) {
+        ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime)
+    }
+}
+
 /// One track of a recording: takes the audio as the device delivers it, converts it
 /// to `AudioFormats.storage`, writes it to the track's file and only then hands it to
 /// the sink. Capture callbacks only copy the buffer and return: conversion, disk
 /// writes and the sink run on a private serial queue, so they never block the
 /// audio threads.
-final class TrackPipeline: @unchecked Sendable {
+final class TrackPipeline: AudioInput, @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.larp.LARP", category: "capture")
     /// Missing audio shorter than this is not filled with silence.
     private static let gapTolerance: TimeInterval = 1
+    /// Longest piece of silence written at once.
+    private static let silenceChunk: TimeInterval = 10
 
     let track: AudioTrack
     private let queue: DispatchQueue
@@ -22,6 +38,8 @@ final class TrackPipeline: @unchecked Sendable {
     private let converter = BufferConverter(target: AudioFormats.storage)
     private var startUptime: TimeInterval?
     private var failed = false
+    /// When the pipeline was made: the start of the track while no audio has arrived yet.
+    private let createdUptime = ProcessInfo.processInfo.systemUptime
 
     init(track: AudioTrack, folder: URL, sink: (any AudioBufferSink)?) throws {
         self.track = track
@@ -32,10 +50,14 @@ final class TrackPipeline: @unchecked Sendable {
 
     /// Called from an audio thread. The buffer is copied: the caller may reuse it
     /// as soon as this returns.
-    func ingest(borrowing buffer: AVAudioPCMBuffer) {
+    func ingest(borrowing buffer: AVAudioPCMBuffer, arrival: TimeInterval) {
         guard let copy = buffer.copy() else { return }
-        let arrival = ProcessInfo.processInfo.systemUptime
-        let chunk = AudioChunk(buffer: copy)
+        enqueue(copy, arrival: arrival)
+    }
+
+    /// Takes `buffer`, which the caller does not touch again.
+    func enqueue(_ buffer: AVAudioPCMBuffer, arrival: TimeInterval) {
+        let chunk = AudioChunk(buffer: buffer)
         queue.async { [self] in
             process(chunk.buffer, arrival: arrival)
         }
@@ -43,9 +65,15 @@ final class TrackPipeline: @unchecked Sendable {
 
     /// Waits for everything ingested so far to be written and handed to the sink,
     /// then closes the file.
-    func finish() async {
+    ///
+    /// `silenceUntil` is the uptime the track must reach: what is missing up to it is
+    /// filled with silence first, so that the track is as long as the recording even
+    /// when its audio stopped arriving (the microphone was lost). `nil` leaves the
+    /// track as it is, for instance an empty one.
+    func finish(silenceUntil end: TimeInterval? = nil) async {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                if let end, !failed { fillSilence(until: end) }
                 writer.close()
                 continuation.resume()
             }
@@ -66,15 +94,39 @@ final class TrackPipeline: @unchecked Sendable {
             // would shift every later time: fill it with silence.
             let expected = arrival - (startUptime ?? arrival)
             let written = Double(writer.framesWritten + Int64(converted.frameLength)) / rate
-            if expected - written > Self.gapTolerance, let silence = Self.silence(seconds: expected - written) {
-                try writer.write(silence)
-                sink?.consume(AudioChunk(buffer: silence), track: track)
+            if expected - written > Self.gapTolerance {
+                try writeSilence(seconds: expected - written)
             }
             try writer.write(converted)
             sink?.consume(AudioChunk(buffer: converted), track: track)
         } catch {
             failed = true
             Self.logger.error("Capture of \(self.track.fileName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Fills what is missing up to `end` with silence, whatever its length.
+    private func fillSilence(until end: TimeInterval) {
+        let missing = end - (startUptime ?? createdUptime) - Double(writer.framesWritten) / AudioFormats.storageSampleRate
+        guard missing > 0 else { return }
+        do {
+            try writeSilence(seconds: missing)
+        } catch {
+            failed = true
+            Self.logger.error("Capture of \(self.track.fileName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Writes silence in pieces of at most `silenceChunk`, so that a long gap does not
+    /// need one huge buffer.
+    private func writeSilence(seconds: TimeInterval) throws {
+        var remaining = seconds
+        while remaining > 0 {
+            let piece = min(remaining, Self.silenceChunk)
+            guard let silence = Self.silence(seconds: piece) else { return }
+            try writer.write(silence)
+            sink?.consume(AudioChunk(buffer: silence), track: track)
+            remaining -= piece
         }
     }
 

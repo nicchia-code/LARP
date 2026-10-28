@@ -45,14 +45,41 @@ protocol AudioBufferSink: Sendable {
     func consume(_ chunk: AudioChunk, track: AudioTrack)
 }
 
+/// Whether a recording needs the system audio.
+enum SystemAudioPolicy: Sendable {
+    /// The recording does not start without the system audio (accepting a proposal).
+    case required
+    /// Without the system audio (its permission is missing or its capture does not
+    /// start) only the microphone is recorded (a recording started by hand).
+    case optional
+}
+
+/// What the capture tells the recorder while a recording runs. May be reported from
+/// any thread.
+enum CaptureEvent: Equatable, Sendable {
+    /// A recording with an optional system audio records only the microphone.
+    /// `permissionMissing` tells that the system audio permission is the reason.
+    case systemAudioUnavailable(permissionMissing: Bool)
+    /// The microphone started or restarted while the system audio is recorded: whether
+    /// the sound of the others is removed from it.
+    case echoCancellation(available: Bool)
+    /// The microphone could not start again after a change of audio devices: the
+    /// recording goes on without the user's voice.
+    case microphoneLost
+    /// The microphone is being recorded again after it was lost.
+    case microphoneRestored
+}
+
 /// Captures the microphone and the system audio of a recording into
 /// `mic.caf` and `system.caf`.
 protocol AudioCapturing: Sendable {
     /// Starts capturing both tracks into `folder` (created if needed). Every
     /// buffer is written to disk first and then given to `sink`, in the format
-    /// `AudioFormats.storage`. Throws if either track cannot be started; nothing
-    /// is left running then.
-    func start(into folder: URL, sink: (any AudioBufferSink)?) async throws
+    /// `AudioFormats.storage`. Throws if the microphone cannot be started, or the
+    /// system audio when `systemAudio` is `.required`; nothing is left running then.
+    /// With `.optional` and no system audio, only the microphone is captured and
+    /// `system.caf` stays empty.
+    func start(into folder: URL, sink: (any AudioBufferSink)?, systemAudio: SystemAudioPolicy) async throws
 
     /// Stops capturing and closes the files. Returns after everything captured
     /// has been written and given to the sink.

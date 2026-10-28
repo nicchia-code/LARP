@@ -1,13 +1,18 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 
-/// Captures the default input device with `AVAudioEngine` and feeds a `TrackPipeline`.
-/// Follows the default device when it changes during the recording.
+/// Captures the default input device with `AVAudioEngine` and feeds a `TrackPipeline`,
+/// through the `EchoRemover` when the system audio is recorded. Follows the default
+/// device when it changes during the recording.
 ///
-/// Voice processing is switched on for every recording, whatever the audio output
-/// is, so the sound of the other participants that the microphone picks up from the
-/// speakers is removed from the microphone track. When it cannot be switched on the
-/// capture goes on without it.
+/// macOS voice processing is never enabled: it would lower the audio of every other
+/// app and could change the level of the microphone. The sound of the others that
+/// the microphone picks up from the speakers is removed by the `EchoRemover`.
+///
+/// When the engine cannot start again after a change of audio devices the microphone
+/// is lost: the engine stays stopped and nothing arrives from it. It starts again at
+/// the next change of audio devices that lets it.
 final class MicrophoneCapture: @unchecked Sendable {
     enum CaptureError: LocalizedError {
         case noInputDevice
@@ -19,21 +24,41 @@ final class MicrophoneCapture: @unchecked Sendable {
         }
     }
 
-    private let pipeline: TrackPipeline
-    /// Called after the engine has started, at the start and after every restart
-    /// caused by a change of microphone or audio output: `true` when voice
-    /// processing is on (the sound of the others is removed from the microphone),
-    /// `false` when the capture runs without it.
-    private let echoCancellationChanged: @Sendable (Bool) -> Void
+    /// Where the microphone audio goes: the echo remover, or the track itself when the
+    /// system audio is not recorded and there is nothing to remove.
+    private let input: any AudioInput
+    private let echoRemover: EchoRemover?
+    /// Reports `CaptureEvent.echoCancellation` after the engine has started, at the
+    /// start and after every restart caused by a change of microphone or audio output
+    /// (`true` when the echo canceller is running, so the sound of the others is
+    /// removed from the microphone, `false` when the capture runs without it), and
+    /// `.microphoneLost` / `.microphoneRestored` when the microphone goes and comes back.
+    private let events: @Sendable (CaptureEvent) -> Void
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var configurationObserver: NSObjectProtocol?
+    private var deviceListener: AudioObjectPropertyListenerBlock?
     private var isRunning = false
+    private var lost = false
 
-    init(pipeline: TrackPipeline, echoCancellationChanged: @escaping @Sendable (Bool) -> Void = { _ in }) {
-        self.pipeline = pipeline
-        self.echoCancellationChanged = echoCancellationChanged
+    /// - Parameters:
+    ///   - pipeline: the microphone's track.
+    ///   - echoRemover: removes the echo of the system audio from the microphone before it
+    ///     reaches `pipeline`; `nil` when the system audio is not recorded.
+    init(
+        pipeline: TrackPipeline, echoRemover: EchoRemover? = nil,
+        events: @escaping @Sendable (CaptureEvent) -> Void = { _ in }
+    ) {
+        input = echoRemover?.microphone ?? pipeline
+        self.echoRemover = echoRemover
+        self.events = events
     }
+
+    /// Whether macOS voice processing is on for the input node: never, but tests check it.
+    var isVoiceProcessingEnabled: Bool { lock.withLock { engine.inputNode.isVoiceProcessingEnabled } }
+
+    /// Whether the microphone is lost. It stays so after `stop()`.
+    var isLost: Bool { lock.withLock { lost } }
 
     func start() throws {
         let echoCancelled: Bool = try lock.withLock {
@@ -46,84 +71,134 @@ final class MicrophoneCapture: @unchecked Sendable {
             }
             return echoCancelled
         }
-        echoCancellationChanged(echoCancelled)
+        events(.echoCancellation(available: echoCancelled))
     }
 
     func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-        isRunning = false
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-            self.configurationObserver = nil
+        let listener: AudioObjectPropertyListenerBlock? = lock.withLock {
+            isRunning = false
+            if let configurationObserver {
+                NotificationCenter.default.removeObserver(configurationObserver)
+                self.configurationObserver = nil
+            }
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            return takeDeviceListener()
         }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        Self.remove(listener)
     }
 
-    /// Starts the engine with voice processing on the input node, or without it when
-    /// that fails. Returns whether voice processing is on.
+    /// Starts the engine, then the echo canceller from scratch: it adapts to the microphone
+    /// and the output of now. Returns whether the sound of the others is removed from the
+    /// microphone.
     private func installTapAndStart() throws -> Bool {
         engine.stop()
-        let input = engine.inputNode
-        input.removeTap(onBus: 0)
-        if Self.enableVoiceProcessing(on: input) {
-            do {
-                try installTapAndStartEngine()
-                return true
-            } catch {
-                engine.stop()
-                input.removeTap(onBus: 0)
-            }
-        }
-        Self.disableVoiceProcessing(on: input)
+        engine.inputNode.removeTap(onBus: 0)
         try installTapAndStartEngine()
-        return false
+        return echoRemover?.reset() ?? false
     }
 
-    /// Voice processing before the engine starts, with the lowest ducking of the other
-    /// audio. The automatic gain control stays as macOS sets it.
-    private static func enableVoiceProcessing(on input: AVAudioInputNode) -> Bool {
-        do {
-            if !input.isVoiceProcessingEnabled {
-                try input.setVoiceProcessingEnabled(true)
-            }
-            input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
-                enableAdvancedDucking: true, duckingLevel: .min)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private static func disableVoiceProcessing(on input: AVAudioInputNode) {
-        if input.isVoiceProcessingEnabled {
-            try? input.setVoiceProcessingEnabled(false)
-        }
-    }
-
-    /// The tap uses the format the input node reports now, read after voice
-    /// processing was switched on or off: the pipeline converts it to the storage format.
+    /// The tap uses the format the input node reports now: the echo remover or the
+    /// pipeline converts it to the storage format.
     private func installTapAndStartEngine() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInputDevice }
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [pipeline] buffer, _ in
-            pipeline.ingest(borrowing: buffer)
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [target = self.input] buffer, _ in
+            target.ingest(borrowing: buffer)
         }
         engine.prepare()
         try engine.start()
     }
 
     /// `macos.AUDIO_DEVICES_CHANGED`: the engine stops itself when the input device,
-    /// the output device or their formats change. It restarts with voice processing
-    /// switched on again.
+    /// the output device or their formats change. It restarts, and the echo canceller
+    /// with it. When it cannot start, the microphone is lost and the error
+    /// is not ignored: the recording goes on without the user's voice until a later
+    /// change of audio devices lets the microphone start again.
     private func restartAfterConfigurationChange() {
-        let echoCancelled: Bool? = lock.withLock {
-            guard isRunning else { return nil }
-            return (try? installTapAndStart()) ?? false
+        restart(onlyIfLost: false)
+    }
+
+    /// While the microphone is lost the stopped engine may not report changes any more,
+    /// so a change of the default input device or of the connected audio devices counts
+    /// as `macos.AUDIO_DEVICES_CHANGED` too.
+    private func retryAfterDeviceChange() {
+        restart(onlyIfLost: true)
+    }
+
+    private func restart(onlyIfLost: Bool) {
+        enum Outcome {
+            case started(echoCancelled: Bool, wasLost: Bool)
+            case failed(wasLost: Bool)
         }
-        if let echoCancelled { echoCancellationChanged(echoCancelled) }
+        var listenerToRemove: AudioObjectPropertyListenerBlock?
+        let outcome: Outcome? = lock.withLock {
+            guard isRunning, lost || !onlyIfLost else { return nil }
+            let wasLost = lost
+            do {
+                let echoCancelled = try installTapAndStart()
+                lost = false
+                listenerToRemove = takeDeviceListener()
+                return .started(echoCancelled: echoCancelled, wasLost: wasLost)
+            } catch {
+                engine.inputNode.removeTap(onBus: 0)
+                engine.stop()
+                lost = true
+                addDeviceListeners()
+                return .failed(wasLost: wasLost)
+            }
+        }
+        // Removed outside the lock: a listener that is running waits for the lock.
+        Self.remove(listenerToRemove)
+        switch outcome {
+        case .started(let echoCancelled, let wasLost):
+            if wasLost { events(.microphoneRestored) }
+            events(.echoCancellation(available: echoCancelled))
+        case .failed(let wasLost):
+            if !wasLost { events(.microphoneLost) }
+        case nil:
+            break
+        }
+    }
+
+    // MARK: - Devices while the microphone is lost
+
+    private static let deviceQueue = DispatchQueue(label: "com.larp.LARP.microphone.devices")
+
+    private static let deviceAddresses = [
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain),
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain),
+    ]
+
+    /// Called with the lock held.
+    private func addDeviceListeners() {
+        guard deviceListener == nil else { return }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.retryAfterDeviceChange()
+        }
+        deviceListener = listener
+        for var address in Self.deviceAddresses {
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, Self.deviceQueue, listener)
+        }
+    }
+
+    /// Called with the lock held. The caller removes the listener with `remove(_:)`
+    /// after releasing the lock.
+    private func takeDeviceListener() -> AudioObjectPropertyListenerBlock? {
+        defer { deviceListener = nil }
+        return deviceListener
+    }
+
+    private static func remove(_ listener: AudioObjectPropertyListenerBlock?) {
+        guard let listener else { return }
+        for var address in deviceAddresses {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, Self.deviceQueue, listener)
+        }
     }
 }

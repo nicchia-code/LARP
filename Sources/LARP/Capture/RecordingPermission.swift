@@ -40,7 +40,9 @@ enum RecordingPermission: Equatable, Sendable {
 /// Checks the permissions needed to record. Replaced in tests.
 protocol RecordingPermissions: Sendable {
     /// The first permission that is missing (microphone before system audio), or
-    /// `nil` if recording is allowed. May ask the system to show its permission
+    /// `nil` if recording is allowed. The system audio permission is only checked when
+    /// `requireSystemAudio` is `true` (accepting a proposal): a recording started by
+    /// hand needs the microphone only. May ask the system to show its permission
     /// prompt when the user has not decided yet.
-    func missingPermission() async -> RecordingPermission?
+    func missingPermission(requireSystemAudio: Bool) async -> RecordingPermission?
 }

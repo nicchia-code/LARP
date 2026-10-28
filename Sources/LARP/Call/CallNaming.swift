@@ -7,8 +7,10 @@ extension Call {
         "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
     ]
 
-    /// The title the user gave, or "Call del <giorno> <mese> <anno>, <hh:mm>"
-    /// built from the start of the call, for example "Call del 27 ottobre 2026, 10:41".
+    /// The title the user gave, or the default one built from the start of the call:
+    /// "Call del <giorno> <mese> <anno>, <hh:mm>" for a call tied to a call app, for example
+    /// "Call del 27 ottobre 2026, 10:41", and "Registrazione del <giorno> <mese> <anno>, <hh:mm>"
+    /// for a recording without a call app (`callAppName == nil`).
     var displayTitle: String {
         displayTitle(calendar: .current)
     }
@@ -17,16 +19,17 @@ extension Call {
         if let title, !title.isEmpty {
             return title
         }
-        return Self.defaultTitle(for: startedAt, calendar: calendar)
+        return Self.defaultTitle(for: startedAt, hasCallApp: callAppName != nil, calendar: calendar)
     }
 
-    /// "Call del <giorno> <mese> <anno>, <hh:mm>" with the Italian month name.
-    static func defaultTitle(for date: Date, calendar: Calendar = .current) -> String {
+    /// "Call del <giorno> <mese> <anno>, <hh:mm>" with the Italian month name, or
+    /// "Registrazione del …" when the recording has no call app.
+    static func defaultTitle(for date: Date, hasCallApp: Bool = true, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.day, .month, .year, .hour, .minute], from: date)
         let month = italianMonths[(parts.month ?? 1) - 1]
         return String(
-            format: "Call del %d %@ %d, %02d:%02d",
-            parts.day ?? 1, month, parts.year ?? 1970, parts.hour ?? 0, parts.minute ?? 0
+            format: "%@ del %d %@ %d, %02d:%02d",
+            hasCallApp ? "Call" : "Registrazione", parts.day ?? 1, month, parts.year ?? 1970, parts.hour ?? 0, parts.minute ?? 0
         )
     }
 

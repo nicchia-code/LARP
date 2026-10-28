@@ -1,0 +1,36 @@
+---
+column: done
+technical: false
+refs:
+  - recorder/Idle/user.START_RECORDING
+  - recorder/Proposing/user.ACCEPT_PROPOSAL
+  - recorder/Recording
+  - requirements/tech#General
+  - requirements/tech#recorder
+  - requirements/quality#recorder/Recording
+  - specs#frameworks
+drift: null
+proposal: evknrrmb
+agent: false
+created: 2026-10-28T15:35:33.455Z
+finished: 2026-10-28T16:21:41.858Z
+---
+# Eco con WebRTC AEC3
+
+Oggi, durante ogni registrazione, LARP attiva il voice processing di macOS sul microfono (`MicrophoneCapture.enableVoiceProcessing(on:)` in `Sources/LARP/Recording/MicrophoneCapture.swift`, introdotto dal commit 2d1eaac). macOS abbassa così l'audio di tutte le altre app, compresa l'app della chiamata, anche con `duckingLevel .min`; l'AGC può cambiare il livello del microfono, e con buona probabilità anche la traccia dell'audio di sistema registrata esce abbassata. Lo sviluppatore considera un problema tutto questo.
+
+Quando il Task è finito vale quanto segue.
+
+- In `recorder/Recording` si registrano il microfono e, salvo che non fosse disponibile all'avvio di una registrazione manuale, l'audio di sistema. Finché l'audio di sistema è registrato, la voce degli altri partecipanti che il microfono raccoglie dagli altoparlanti viene tolta dal microfono mentre si registra, con o senza cuffie, così che il microfono tenga solo la voce dell'utente e gli altri siano sentiti e trascritti una volta sola, dall'audio di sistema. In una registrazione senza audio di sistema dal microfono non si toglie nulla: tiene tutto quello che raccoglie. La registrazione non cambia niente di quello che sentono l'utente e gli altri partecipanti: il volume dell'app della chiamata e di ogni altra app del Mac, e il livello del microfono che l'app della chiamata manda agli altri, restano come senza registrazione.
+- Il voice processing di macOS non è mai attivato: niente `setVoiceProcessingEnabled(true)`, niente configurazione del ducking, niente AGC. L'app non cambia mai il volume di un dispositivo di uscita, il volume di ingresso di un microfono o l'audio di altre app.
+- L'eco è tolta da WebRTC AEC3 (`webrtc::AudioProcessing` con attivo solo l'echo canceller; gain control, noise suppression e ogni altro stadio spenti), con l'audio di sistema catturato dal process tap (`Sources/LARP/Recording/SystemAudioTap.swift`) come segnale di riferimento (render) e il microfono come segnale di cattura. Il modulo audio processing di WebRTC è compilato dal sorgente come target C++ di Swift Package Manager fissato a una revisione precisa, con un sottile wrapper per Swift; non si include altro di WebRTC oltre al modulo e a ciò che gli serve. Le dipendenze di terze parti diventano FluidAudio e questo modulo; aggiungerlo a `project.yml` (XcodeGen).
+- La rimozione dell'eco è attiva in ogni registrazione che cattura l'audio di sistema, qualunque sia l'uscita audio (altoparlanti integrati, esterni o cuffie); l'app non rileva l'uscita. In una registrazione avviata a mano che cattura solo il microfono (`user.START_RECORDING` da Idle senza permesso dell'audio di sistema o con il tap che non parte) manca il segnale di riferimento: l'echo canceller non viene creato, il microfono è salvato così com'è e il pannello «Cancellazione dell'eco non disponibile…» non compare (resta solo il pannello «Audio di sistema non disponibile…» già esistente).
+- I due segnali arrivano all'echo canceller in 16 kHz mono, a frame di 10 ms: il tap del microfono usa il formato del nodo di ingresso e qualunque frequenza o numero di canali viene convertito; l'audio di sistema è convertito allo stesso modo. Il ritardo tra i due segnali è lasciato alla stima interna di AEC3.
+- L'eco è tolta durante la registrazione, prima che l'audio del microfono sia scritto in `mic.caf` e passato alla trascrizione dal vivo: la traccia salvata e le righe «Me» vedono solo l'audio pulito. L'elaborazione gira su una propria coda seriale alimentata dai due tap, mai su un thread di I/O di Core Audio, e non blocca mai la cattura.
+- Quando l'echo canceller non si può creare o avviare all'inizio di una registrazione che cattura l'audio di sistema, il microfono è registrato senza rimozione dell'eco e la registrazione parte comunque; l'utente è avvisato con il pannello già esistente di `requirements/ui#recorder/Recording` («Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte.», `EchoCancellationWarningPanelController` in `Sources/LARP/Capture/RecorderPresenters.swift`). Questo vale sia per `user.START_RECORDING` da Idle sia per `user.ACCEPT_PROPOSAL` da Proposing.
+- In `recorder/Microphone on`, su `macos.AUDIO_DEVICES_CHANGED` (notifica `AVAudioEngineConfigurationChange` del motore durante la registrazione), quando il microfono riparte la registrazione continua con il nuovo microfono o la nuova uscita: il motore è riavviato, sempre senza voice processing, e l'echo canceller è azzerato perché si adatti; se l'echo canceller non riparte e l'audio di sistema è registrato, il microfono è registrato senza rimozione dell'eco e l'utente è avvisato di nuovo di usare le cuffie. Se invece il microfono non riparte, resta valido il comportamento già esistente verso `recorder/Microphone lost` (la registrazione continua senza la voce dell'utente, traccia del microfono in silenzio, avviso «Microfono non disponibile…»).
+- In `recorder/Microphone lost`, quando il microfono riparte su `macos.AUDIO_DEVICES_CHANGED` (anche per un cambio del dispositivo di ingresso predefinito o dei dispositivi collegati), il motore riparte sempre senza voice processing, l'echo canceller è azzerato e la rimozione dell'eco riprende come all'inizio di una registrazione.
+- Un test automatico (Swift Testing, deterministico, senza altoparlanti) verifica l'echo canceller con audio sintetico: un segnale di riferimento e un segnale di microfono fatto dello stesso riferimento ritardato e attenuato più un segnale «utente» separato. Dopo i primi 2 secondi, nelle parti in cui suona solo il riferimento, l'eco rimasta nel microfono pulito è almeno 20 dB sotto l'eco in ingresso; nelle parti in cui parla solo l'utente, il suo livello resta entro 3 dB. Il test esistente in `Tests/LARPTests/MicrophoneCaptureTests.swift` che controlla che la cattura parta con il voice processing attivo va sostituito, perché quel comportamento non esiste più.
+- Prova manuale su un Mac reale (da riportare, non automatizzabile): durante una chiamata con altoparlanti integrati e con cuffie, l'app della chiamata si sente forte come senza registrazione, le altre app (per esempio la musica) non si abbassano, il volume di ingresso del microfono in Impostazioni di Sistema e il livello che sentono gli altri restano uguali prima, durante e dopo la registrazione; senza cuffie, con la chiamata sugli altoparlanti a volume normale, gli altri partecipanti non si sentono nella traccia del microfono e non producono righe «Me».
+- Su un Mac M1 la registrazione con trascrizione dal vivo di entrambe le tracce, ora con la rimozione dell'eco, non perde audio in una chiamata di un'ora.
+- Nessuna regolazione di livello delle registrazioni, né in registrazione né in riascolto: le chiamate già registrate restano come sono.

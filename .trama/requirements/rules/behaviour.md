@@ -12,7 +12,7 @@ description: Use when implementing call detection, transcript assembly, names an
 ## call
 - Live and file transcription produce the same kind of lines; a call's transcript is the lines of both tracks merged in order of start time.
 - Live transcription starts only if the chosen language is ready when the recording starts; a language that becomes ready during a recording does not start it halfway.
-- A call without a title is shown as "Call del <day> <month> <year>, <hh:mm>" with the Italian month name, for example "Call del 27 ottobre 2026, 10:41".
+- A call without a title is shown as "Call del <day> <month> <year>, <hh:mm>" when it is tied to a call app, and as "Registrazione del <day> <month> <year>, <hh:mm>" when it has no call app (started by hand), with the Italian month name, for example "Call del 27 ottobre 2026, 10:41" and "Registrazione del 28 ottobre 2026, 15:35".
 - A participant without a name is shown as "Partecipante <number>"; "Me" is shown as "Io" and "Others" as "Altri".
 - An empty title or empty name given by the user restores the default.
 - Refinement sends, for every line of the call in order of start time: a line number, the original speaker as "Io" or "Partecipante <number>" (never a name given by the user), the start and end time and the original text. It never sends the audio, the title, the names given by the user, the dates or the call app.

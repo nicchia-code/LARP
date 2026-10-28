@@ -59,7 +59,8 @@ extension CallLifecycle {
     private static var logger: Logger { Logger(subsystem: "com.larp.LARP", category: "recording") }
 
     /// `recorder.RECORDING_STARTED`: a call is born in **Recording**. The microphone
-    /// and the system audio are saved as two tracks; when the chosen language is
+    /// and the system audio (the microphone alone for a recording started by hand
+    /// when the system audio is not available) are saved as two tracks; when the chosen language is
     /// ready both are transcribed live in the background.
     func recordingStarted(callAppName: String?) async {
         guard activeRecording == nil else { return }
@@ -73,7 +74,11 @@ extension CallLifecycle {
         // Capture first: nothing said is lost while the speech models load.
         let relay = LiveAudioRelay()
         do {
-            try await capture.start(into: call.recordingsFolderURL, sink: relay)
+            // A recording started by hand (tied to no call app) goes on with the
+            // microphone alone when the system audio is not available.
+            try await capture.start(
+                into: call.recordingsFolderURL, sink: relay,
+                systemAudio: callAppName == nil ? .optional : .required)
         } catch {
             Self.logger.error("Capture did not start: \(error.localizedDescription, privacy: .public)")
             // The call born for this recording goes away; the user is told why.

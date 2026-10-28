@@ -60,6 +60,18 @@ struct CallRecordingTests {
         #expect(try harness.allCalls().first?.callAppName == nil)
     }
 
+    @Test("the system audio is optional for a recording started by hand and required for one tied to a call app")
+    func systemAudioPolicy() async throws {
+        let harness = try CallHarness()
+        defer { harness.cleanUp() }
+
+        await harness.lifecycle.handle(.started(callAppName: nil))
+        await harness.lifecycle.handle(.stopped)
+        await harness.lifecycle.handle(.started(callAppName: "Zoom"))
+
+        #expect(harness.capture.systemAudioPolicies == [.optional, .required])
+    }
+
     @Test("a recording that cannot start leaves no call behind and tells the user why")
     func captureFailure() async throws {
         let harness = try CallHarness()

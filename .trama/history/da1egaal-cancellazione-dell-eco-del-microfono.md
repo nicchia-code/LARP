@@ -1,10 +1,11 @@
 ---
 created: 2026-10-27T16:33:43.344Z
-updated: 2026-10-27T16:33:43.344Z
-summary: Il microfono viene registrato con il voice processing di macOS, con o senza cuffie, così gli altri partecipanti si sentono e si trascrivono una sola volta. Se non è disponibile, un pannello avvisa di usare le cuffie.
+updated: 2026-10-28T16:24:06.718Z
+summary: "L'eco degli altri partecipanti è tolta dal microfono da WebRTC AEC3, senza voice processing di macOS: nessun volume cambia. Senza audio di sistema l'eco non si toglie e non compare alcun avviso."
 tasks:
   - ha8n2ux7
+  - svtdzv1x
 ---
-# Cancellazione dell'eco del microfono
+# Eco rimossa con WebRTC AEC3
 
-Senza cuffie il microfono riprendeva gli altri partecipanti dagli altoparlanti: finivano in entrambe le tracce e comparivano anche come righe "Io". Ora il microfono è catturato con la cancellazione dell'eco di macOS sempre attiva, con abbassamento minimo del volume delle altre app, e segue i cambi di microfono o di uscita audio durante la registrazione. Quando la cancellazione non si riesce ad attivare, la registrazione parte o prosegue comunque e un piccolo pannello sotto l'icona nella barra dei menu avvisa di usare le cuffie, sparendo dopo 10 secondi. La verifica con altoparlanti reali va fatta su un Mac.
+Il voice processing di macOS non è più attivo. Il microfono è ripulito durante la registrazione dall'echo canceller AEC3, con l'audio di sistema come riferimento, prima di `mic.caf` e della trascrizione dal vivo. Dopo un cambio dei dispositivi audio l'echo canceller riparte. Se non si può creare, la registrazione parte comunque e un pannello avvisa di usare le cuffie.

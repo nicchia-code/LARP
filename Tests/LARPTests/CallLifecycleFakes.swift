@@ -35,6 +35,7 @@ final class FakeCapture: AudioCapturing {
     struct State {
         var startedFolders: [URL] = []
         var stopCount = 0
+        var systemAudioPolicies: [SystemAudioPolicy] = []
         var sink: (any AudioBufferSink)?
         var failure: (any Error)?
     }
@@ -43,13 +44,15 @@ final class FakeCapture: AudioCapturing {
 
     var startedFolders: [URL] { state.withLock { $0.startedFolders } }
     var stopCount: Int { state.withLock { $0.stopCount } }
+    /// The `systemAudio` given to each start.
+    var systemAudioPolicies: [SystemAudioPolicy] { state.withLock { $0.systemAudioPolicies } }
     var sink: (any AudioBufferSink)? { state.withLock { $0.sink } }
 
     func failNextStart(with error: any Error) {
         state.withLock { $0.failure = error }
     }
 
-    func start(into folder: URL, sink: (any AudioBufferSink)?) async throws {
+    func start(into folder: URL, sink: (any AudioBufferSink)?, systemAudio: SystemAudioPolicy) async throws {
         if let error = state.withLock({ state -> (any Error)? in
             defer { state.failure = nil }
             return state.failure
@@ -59,6 +62,7 @@ final class FakeCapture: AudioCapturing {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         state.withLock {
             $0.startedFolders.append(folder)
+            $0.systemAudioPolicies.append(systemAudio)
             $0.sink = sink
         }
     }

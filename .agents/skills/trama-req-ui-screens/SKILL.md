@@ -27,7 +27,12 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 
 ## recorder/Recording
 
-- When the sound of the other participants cannot be removed from the microphone, at the start of a recording or after a change of audio devices, a small panel under the menu bar icon that does not steal focus says "Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte." and disappears by itself after 10 seconds.
+- When the sound of the other participants cannot be removed from the microphone, at the start of a recording or after a change of audio devices, and the system audio is being recorded, a small panel under the menu bar icon that does not steal focus says "Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte." and disappears by itself after 10 seconds. It is never shown in a recording without the system audio.
+- When a recording started by hand records only the microphone, a small panel under the menu bar icon that does not steal focus says "Audio di sistema non disponibile: si registra solo il microfono." and disappears by itself after 10 seconds; when the system audio permission is missing, the panel has a button "Apri Impostazioni di Sistema" that opens the right pane of System Settings.
+
+## recorder/Microphone lost
+
+- A small panel under the menu bar icon that does not steal focus says "Microfono non disponibile: la registrazione prosegue senza la tua voce."; it stays while the microphone is lost and disappears when the microphone comes back or the recording ends.
 
 ## main-window
 

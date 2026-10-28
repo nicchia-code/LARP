@@ -41,9 +41,36 @@ private final class FakeEchoWarnings: EchoCancellationWarningPresenting {
     func hide() { isShown = false }
 }
 
+@MainActor
+private final class FakeSystemAudioNotices: SystemAudioUnavailablePresenting {
+    /// `permissionMissing` of each time the notice was shown.
+    private(set) var shown: [Bool] = []
+    private(set) var isShown = false
+    func show(permissionMissing: Bool) {
+        shown.append(permissionMissing)
+        isShown = true
+    }
+    func hide() { isShown = false }
+}
+
+@MainActor
+private final class FakeMicrophoneLostNotices: MicrophoneLostPresenting {
+    private(set) var showCount = 0
+    private(set) var isShown = false
+    func show() {
+        showCount += 1
+        isShown = true
+    }
+    func hide() { isShown = false }
+}
+
+/// The permission checks as the system answers them: the system audio one is only
+/// asked when the start needs it.
 private struct FakePermissions: RecordingPermissions {
     var missing: RecordingPermission?
-    func missingPermission() async -> RecordingPermission? { missing }
+    func missingPermission(requireSystemAudio: Bool) async -> RecordingPermission? {
+        missing == .systemAudio && !requireSystemAudio ? nil : missing
+    }
 }
 
 private struct FakeMicSource: CallAppMicSource {
@@ -57,6 +84,8 @@ private struct Fixture {
     let proposals = FakeProposals()
     let alerts = FakeAlerts()
     let echoWarnings = FakeEchoWarnings()
+    let systemAudioNotices = FakeSystemAudioNotices()
+    let microphoneLostNotices = FakeMicrophoneLostNotices()
 
     init(missing: RecordingPermission? = nil, source: any CallAppMicSource = FakeMicSource(stream: AsyncStream { _ in })) {
         recorder = Recorder(
@@ -64,7 +93,9 @@ private struct Fixture {
             permissions: FakePermissions(missing: missing),
             proposals: proposals,
             alerts: alerts,
-            echoWarnings: echoWarnings
+            echoWarnings: echoWarnings,
+            systemAudioNotices: systemAudioNotices,
+            microphoneLostNotices: microphoneLostNotices
         )
     }
 }
@@ -105,12 +136,22 @@ struct RecorderTests {
         #expect(await emitted(f.recorder, count: 1) == [.started(callAppName: nil)])
     }
 
-    @Test(arguments: [RecordingPermission.microphone, .systemAudio])
-    func manualStartWithMissingPermissionStaysIdleAndAlerts(missing: RecordingPermission) async {
-        let f = Fixture(missing: missing)
+    @Test func manualStartWithMissingMicrophonePermissionStaysIdleAndAlerts() async {
+        let f = Fixture(missing: .microphone)
         await f.recorder.startRecording()
         #expect(f.recorder.state == .idle)
-        #expect(f.alerts.presented == [missing])
+        #expect(f.alerts.presented == [.microphone])
+    }
+
+    @Test func manualStartDoesNotNeedTheSystemAudioPermission() async {
+        let f = Fixture(missing: .systemAudio)
+        await f.recorder.startRecording()
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == nil)
+        #expect(f.alerts.presented.isEmpty)
     }
 
     @Test func manualRecordingIgnoresCallAppStopping() async {
@@ -189,6 +230,15 @@ struct RecorderTests {
         #expect(f.alerts.presented == [.microphone])
     }
 
+    @Test func menuRegistraWhileProposingStillNeedsTheSystemAudioPermission() async {
+        let f = Fixture(missing: .systemAudio)
+        f.recorder.handle(.started(zoom))
+        await f.recorder.startRecording()
+        #expect(f.recorder.state == .idle)
+        #expect(f.proposals.shownApp == nil)
+        #expect(f.alerts.presented == [.systemAudio])
+    }
+
     @Test func secondCallAppDoesNotCreateASecondProposal() {
         let f = Fixture()
         f.recorder.handle(.started(zoom))
@@ -245,7 +295,7 @@ struct RecorderTests {
     @Test func recordingStartedWithoutEchoCancellationWarnsAndKeepsRecording() async {
         let f = Fixture()
         await f.recorder.startRecording()
-        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.captureEvent(.echoCancellation(available: false))
         #expect(f.echoWarnings.isShown)
         #expect(f.recorder.isRecording)
     }
@@ -254,15 +304,15 @@ struct RecorderTests {
         let f = Fixture()
         f.recorder.handle(.started(zoom))
         await f.recorder.acceptProposal()
-        f.recorder.echoCancellationChanged(available: true)
+        f.recorder.captureEvent(.echoCancellation(available: true))
         #expect(f.echoWarnings.showCount == 0)
     }
 
     @Test func audioDevicesChangedWithoutEchoCancellationWarnsAgain() async {
         let f = Fixture()
         await f.recorder.startRecording()
-        f.recorder.echoCancellationChanged(available: false)
-        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.captureEvent(.echoCancellation(available: false))
+        f.recorder.captureEvent(.echoCancellation(available: false))
         #expect(f.echoWarnings.showCount == 2)
         #expect(f.recorder.isRecording)
     }
@@ -270,8 +320,8 @@ struct RecorderTests {
     @Test func audioDevicesChangedWithEchoCancellationRemovesTheWarning() async {
         let f = Fixture()
         await f.recorder.startRecording()
-        f.recorder.echoCancellationChanged(available: false)
-        f.recorder.echoCancellationChanged(available: true)
+        f.recorder.captureEvent(.echoCancellation(available: false))
+        f.recorder.captureEvent(.echoCancellation(available: true))
         #expect(!f.echoWarnings.isShown)
         #expect(f.recorder.isRecording)
     }
@@ -279,15 +329,117 @@ struct RecorderTests {
     @Test func stoppingTheRecordingHidesTheWarning() async {
         let f = Fixture()
         await f.recorder.startRecording()
-        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.captureEvent(.echoCancellation(available: false))
         f.recorder.stopRecording()
         #expect(!f.echoWarnings.isShown)
     }
 
     @Test func echoCancellationReportOutsideARecordingIsIgnored() {
         let f = Fixture()
-        f.recorder.echoCancellationChanged(available: false)
+        f.recorder.captureEvent(.echoCancellation(available: false))
         #expect(f.echoWarnings.showCount == 0)
+    }
+
+    // MARK: System audio not available (recording started by hand)
+
+    @Test(arguments: [true, false])
+    func recordingWithoutSystemAudioTellsTheUser(permissionMissing: Bool) async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.systemAudioUnavailable(permissionMissing: permissionMissing))
+        #expect(f.systemAudioNotices.shown == [permissionMissing])
+        #expect(f.recorder.isRecording)
+        #expect(f.echoWarnings.showCount == 0)
+    }
+
+    @Test func stoppingTheRecordingHidesTheSystemAudioNotice() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.systemAudioUnavailable(permissionMissing: false))
+        f.recorder.stopRecording()
+        #expect(!f.systemAudioNotices.isShown)
+    }
+
+    @Test func systemAudioNoticeOutsideARecordingIsIgnored() {
+        let f = Fixture()
+        f.recorder.captureEvent(.systemAudioUnavailable(permissionMissing: true))
+        #expect(f.systemAudioNotices.shown.isEmpty)
+    }
+
+    // MARK: Microphone on / Microphone lost
+
+    private func microphone(of recorder: Recorder) -> Recorder.Microphone? {
+        if case .recording(let recording) = recorder.state { recording.microphone } else { nil }
+    }
+
+    @Test func recordingStartsWithTheMicrophoneOn() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        #expect(microphone(of: f.recorder) == .on)
+        #expect(!f.microphoneLostNotices.isShown)
+    }
+
+    @Test func microphoneLostKeepsRecordingAndShowsTheNotice() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.microphoneLost)
+        #expect(microphone(of: f.recorder) == .lost)
+        #expect(f.recorder.isRecording)
+        #expect(f.microphoneLostNotices.isShown)
+    }
+
+    @Test func microphoneRestoredGoesBackToMicrophoneOnAndHidesTheNotice() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.microphoneLost)
+        f.recorder.captureEvent(.microphoneRestored)
+        #expect(microphone(of: f.recorder) == .on)
+        #expect(!f.microphoneLostNotices.isShown)
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func stopFromMicrophoneLostEndsTheRecordingAndHidesTheNotice() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.microphoneLost)
+        f.recorder.stopRecording()
+        #expect(f.recorder.state == .idle)
+        #expect(!f.microphoneLostNotices.isShown)
+        #expect(await emitted(f.recorder, count: 2) == [.started(callAppName: nil), .stopped])
+    }
+
+    @Test func tiedAppStoppingFromMicrophoneLostEndsTheRecording() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        await f.recorder.acceptProposal()
+        f.recorder.captureEvent(.microphoneLost)
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.state == .idle)
+        #expect(!f.microphoneLostNotices.isShown)
+    }
+
+    @Test func manualRecordingLostMicrophoneIgnoresCallAppStopping() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.microphoneLost)
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func nextRecordingStartsWithTheMicrophoneOn() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.captureEvent(.microphoneLost)
+        f.recorder.stopRecording()
+        await f.recorder.startRecording()
+        #expect(microphone(of: f.recorder) == .on)
+    }
+
+    @Test func microphoneEventsOutsideARecordingAreIgnored() {
+        let f = Fixture()
+        f.recorder.captureEvent(.microphoneLost)
+        #expect(f.recorder.state == .idle)
+        #expect(f.microphoneLostNotices.showCount == 0)
     }
 
     // MARK: Source

@@ -4,9 +4,9 @@ import CoreAudio
 /// Checks the real permissions: the microphone through `AVAudioApplication`, the
 /// system audio by creating (and immediately destroying) a Core Audio process tap.
 struct SystemRecordingPermissions: RecordingPermissions {
-    func missingPermission() async -> RecordingPermission? {
+    func missingPermission(requireSystemAudio: Bool) async -> RecordingPermission? {
         guard await microphoneGranted() else { return .microphone }
-        guard systemAudioGranted() else { return .systemAudio }
+        if requireSystemAudio, !systemAudioGranted() { return .systemAudio }
         return nil
     }
 

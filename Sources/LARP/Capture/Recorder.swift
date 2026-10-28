@@ -11,6 +11,17 @@ final class Recorder {
         /// The call app the recording is tied to, `nil` for a recording started by hand.
         let callApp: CallApp?
         let startedAt: Date
+        /// The sub-state of **Recording**.
+        var microphone: Microphone = .on
+    }
+
+    /// The sub-states of **Recording**.
+    enum Microphone: Equatable {
+        /// **Microphone on**: the microphone is being recorded.
+        case on
+        /// **Microphone lost**: the microphone could not start again after a change of
+        /// audio devices; the recording goes on without the user's voice.
+        case lost
     }
 
     enum State: Equatable {
@@ -33,6 +44,8 @@ final class Recorder {
     @ObservationIgnored private let proposals: any ProposalPresenting
     @ObservationIgnored private let alerts: any PermissionAlertPresenting
     @ObservationIgnored private let echoWarnings: any EchoCancellationWarningPresenting
+    @ObservationIgnored private let systemAudioNotices: any SystemAudioUnavailablePresenting
+    @ObservationIgnored private let microphoneLostNotices: any MicrophoneLostPresenting
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
@@ -44,6 +57,8 @@ final class Recorder {
         proposals: any ProposalPresenting,
         alerts: any PermissionAlertPresenting,
         echoWarnings: any EchoCancellationWarningPresenting,
+        systemAudioNotices: any SystemAudioUnavailablePresenting,
+        microphoneLostNotices: any MicrophoneLostPresenting,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.micSource = micSource
@@ -51,18 +66,22 @@ final class Recorder {
         self.proposals = proposals
         self.alerts = alerts
         self.echoWarnings = echoWarnings
+        self.systemAudioNotices = systemAudioNotices
+        self.microphoneLostNotices = microphoneLostNotices
         self.now = now
         (events, eventContinuation) = AsyncStream<RecorderEvent>.makeStream(bufferingPolicy: .unbounded)
     }
 
     /// The app's recorder, wired to Core Audio, the system permissions, the
-    /// proposal panel, the permission alert and the echo cancellation warning.
+    /// proposal panel, the permission alert and the notices of the recording.
     static let shared = Recorder(
         micSource: CoreAudioCallAppMicSource(),
         permissions: SystemRecordingPermissions(),
         proposals: ProposalPanelController(),
         alerts: PermissionAlertPresenter(),
-        echoWarnings: EchoCancellationWarningPanelController()
+        echoWarnings: EchoCancellationWarningPanelController(),
+        systemAudioNotices: SystemAudioUnavailablePanelController(),
+        microphoneLostNotices: MicrophoneLostPanelController()
     )
 
     var isRecording: Bool {
@@ -127,28 +146,49 @@ final class Recorder {
         endRecording()
     }
 
-    /// The microphone capture reports whether the sound of the others is removed from
-    /// the microphone: at the start of a recording and after every
-    /// `macos.AUDIO_DEVICES_CHANGED` (the recording goes on with the new microphone or
-    /// output, Recording → Recording). When it is not, the recording goes on anyway and
-    /// the user is told to use headphones; otherwise a warning still shown goes away.
-    func echoCancellationChanged(available: Bool) {
-        guard isRecording else { return }
-        if available {
-            echoWarnings.hide()
-        } else {
-            echoWarnings.show()
+    /// What the capture reports while a recording runs; events that arrive when no
+    /// recording is running are ignored.
+    func captureEvent(_ event: CaptureEvent) {
+        guard case .recording(var recording) = state else { return }
+        switch event {
+        case .echoCancellation(let available):
+            // At the start of a recording and after every `macos.AUDIO_DEVICES_CHANGED`
+            // that restarts the microphone (Microphone on → Microphone on). When the
+            // sound of the others cannot be removed the recording goes on anyway and
+            // the user is told to use headphones; otherwise a warning still shown goes away.
+            if available {
+                echoWarnings.hide()
+            } else {
+                echoWarnings.show()
+            }
+        case .microphoneLost:
+            // `macos.AUDIO_DEVICES_CHANGED`: Microphone on → Microphone lost.
+            recording.microphone = .lost
+            state = .recording(recording)
+            microphoneLostNotices.show()
+        case .microphoneRestored:
+            // `macos.AUDIO_DEVICES_CHANGED`: Microphone lost → Microphone on.
+            recording.microphone = .on
+            state = .recording(recording)
+            microphoneLostNotices.hide()
+        case .systemAudioUnavailable(let permissionMissing):
+            // A recording started by hand that records only the microphone.
+            systemAudioNotices.show(permissionMissing: permissionMissing)
         }
     }
 
     // MARK: - Transitions
 
     /// Checks the permissions, then starts a recording tied to the app of the
-    /// proposal if there is one, or tied to nothing.
+    /// proposal if there is one, or tied to nothing. Accepting a proposal needs the
+    /// microphone and the system audio permissions; a recording started by hand from
+    /// **Idle** needs the microphone one only.
     private func beginRecording() async {
         guard !isCheckingPermissions else { return }
+        let startedFromProposal: Bool
+        if case .proposing = state { startedFromProposal = true } else { startedFromProposal = false }
         isCheckingPermissions = true
-        let missing = await permissions.missingPermission()
+        let missing = await permissions.missingPermission(requireSystemAudio: startedFromProposal)
         isCheckingPermissions = false
 
         if let missing {
@@ -163,6 +203,9 @@ final class Recorder {
         case .idle:
             beginRecording(tiedTo: nil)
         case .proposing(let app):
+            // A call app started using the microphone while the permission was being
+            // asked: the system audio permission was not checked for its proposal.
+            guard startedFromProposal else { return }
             proposals.hide()
             beginRecording(tiedTo: app)
         case .recording:
@@ -187,6 +230,8 @@ final class Recorder {
     private func endRecording() {
         tickerTask?.cancel()
         echoWarnings.hide()
+        systemAudioNotices.hide()
+        microphoneLostNotices.hide()
         tickerTask = nil
         state = .idle
         elapsedSeconds = 0

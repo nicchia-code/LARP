@@ -20,10 +20,31 @@ struct CallManagementTests {
 
     // MARK: Default names
 
-    @Test("a call without title is shown as \"Call del <giorno> <mese> <anno>, <hh:mm>\"")
+    @Test("a call from a call app without title is shown as \"Call del <giorno> <mese> <anno>, <hh:mm>\"")
     func defaultTitle() {
-        let call = Call(startedAt: Self.date(2026, 10, 27, 10, 41), transcriptionLanguage: "it-IT")
+        let call = Call(
+            startedAt: Self.date(2026, 10, 27, 10, 41), callAppName: "Teams", transcriptionLanguage: "it-IT")
         #expect(call.displayTitle(calendar: Self.utc) == "Call del 27 ottobre 2026, 10:41")
+    }
+
+    @Test("a recording without call app is shown as \"Registrazione del <giorno> <mese> <anno>, <hh:mm>\"")
+    func defaultTitleWithoutCallApp() {
+        let call = Call(startedAt: Self.date(2026, 10, 28, 15, 35), transcriptionLanguage: "it-IT")
+        #expect(call.callAppName == nil)
+        #expect(call.displayTitle(calendar: Self.utc) == "Registrazione del 28 ottobre 2026, 15:35")
+    }
+
+    @Test("a call from a call app keeps the \"Call del …\" default title")
+    func defaultTitleWithCallApp() {
+        let call = Call(
+            startedAt: Self.date(2026, 10, 27, 10, 41), callAppName: "Zoom", transcriptionLanguage: "it-IT")
+        #expect(call.displayTitle(calendar: Self.utc) == "Call del 27 ottobre 2026, 10:41")
+    }
+
+    @Test("a title given by the user wins over both default titles")
+    func customTitleWinsWithoutCallApp() {
+        let call = Call(title: "Weekly", startedAt: Self.date(2026, 10, 28, 15, 35), transcriptionLanguage: "it-IT")
+        #expect(call.displayTitle(calendar: Self.utc) == "Weekly")
     }
 
     @Test("the default title uses the Italian month names and pads only the minutes and hours")
@@ -107,7 +128,21 @@ struct CallManagementTests {
         harness.lifecycle.renameCall(call, to: "   ")
 
         #expect(call.title == nil)
-        #expect(call.displayTitle == Call.defaultTitle(for: call.startedAt))
+        #expect(call.displayTitle == Call.defaultTitle(for: call.startedAt, hasCallApp: false))
+    }
+
+    @Test("an empty title of a call from a call app restores \"Call del …\"")
+    func emptyTitleRestoresCallDefault() throws {
+        let harness = try CallHarness()
+        defer { harness.cleanUp() }
+        let call = try harness.insertCall(.ready, title: "Weekly")
+        call.callAppName = "Zoom"
+
+        harness.lifecycle.renameCall(call, to: "")
+
+        #expect(call.title == nil)
+        #expect(call.displayTitle == Call.defaultTitle(for: call.startedAt, hasCallApp: true))
+        #expect(call.displayTitle.hasPrefix("Call del "))
     }
 
     @Test("a title is stored without surrounding whitespace")

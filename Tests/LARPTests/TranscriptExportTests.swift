@@ -45,6 +45,14 @@ struct TranscriptExportTests {
         let call = makeCall(title: nil)
         #expect(TranscriptExport.markdown(for: call).hasPrefix("# \(call.displayTitle)\n"))
         #expect(TranscriptExport.defaultFileName(for: call) == call.displayTitle)
+        #expect(call.displayTitle.hasPrefix("Registrazione del 27 ottobre 2026, 10:41"))
+    }
+
+    @Test("a call from a call app without title is exported as \"Call del …\"")
+    func defaultTitleWithCallApp() {
+        let call = makeCall(title: nil)
+        call.callAppName = "Zoom"
+        #expect(TranscriptExport.defaultFileName(for: call) == "Call del 27 ottobre 2026, 10:41")
     }
 
     @Test("the default file name is the title, without the path separator")
