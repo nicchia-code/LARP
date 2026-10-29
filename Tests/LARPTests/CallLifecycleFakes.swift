@@ -262,6 +262,80 @@ final class RefinementSwitch {
     init(_ isOn: Bool) { self.isOn = isOn }
 }
 
+/// Whether call summaries are on, for `CallLifecycle.summariesAreOn`.
+@MainActor
+final class SummariesSwitch {
+    var isOn: Bool
+    init(_ isOn: Bool) { self.isOn = isOn }
+}
+
+/// A summary writer (the assistant asked for a summary) whose outcome is controlled by the test.
+final class FakeSummarizer: TranscriptRefining {
+    enum Behavior: Sendable {
+        /// Answers at once with this text.
+        case answer(String)
+        /// Fails at once.
+        case fail
+        /// Waits until cancelled, which stands for the process being terminated.
+        case hang
+        /// Waits for the gate, whether or not it is cancelled, then answers with `answer` or
+        /// fails when it is `nil`.
+        case held(WorkGate, answer: String?)
+    }
+
+    private struct State {
+        var behavior: Behavior
+        var prompts: [String] = []
+        var cancelled = 0
+        var endedCancelled = 0
+    }
+
+    private let state: Mutex<State>
+
+    init(_ behavior: Behavior = .fail) {
+        state = Mutex(State(behavior: behavior))
+    }
+
+    func setBehavior(_ behavior: Behavior) {
+        state.withLock { $0.behavior = behavior }
+    }
+
+    /// The prompts received, one per summary started.
+    var prompts: [String] { state.withLock { $0.prompts } }
+    /// How many `.hang` summaries ended because they were cancelled.
+    var cancelledCount: Int { state.withLock { $0.cancelled } }
+    /// How many summaries were already cancelled when they came to an end: their process had
+    /// been terminated.
+    var endedCancelledCount: Int { state.withLock { $0.endedCancelled } }
+
+    @concurrent
+    func refine(prompt: String) async throws -> String {
+        let behavior = state.withLock { state -> Behavior in
+            state.prompts.append(prompt)
+            return state.behavior
+        }
+        switch behavior {
+        case .answer(let text):
+            return text
+        case .fail:
+            throw FakeTranscriptionFailure()
+        case .hang:
+            do {
+                try await Task.sleep(for: .seconds(120))
+            } catch {
+                state.withLock { $0.cancelled += 1 }
+                throw error
+            }
+            return ""
+        case .held(let gate, let answer):
+            await gate.wait()
+            if Task.isCancelled { state.withLock { $0.endedCancelled += 1 } }
+            guard let answer else { throw FakeTranscriptionFailure() }
+            return answer
+        }
+    }
+}
+
 /// A `CallLifecycle` over an in-memory archive and fake collaborators.
 @MainActor
 struct CallHarness {
@@ -272,6 +346,7 @@ struct CallHarness {
     let captureAlerts = FakeCaptureFailureAlerts()
     let recorderEnds = RecorderEndCounter()
     let refinement: RefinementSwitch
+    let summaries: SummariesSwitch
     let lifecycle: CallLifecycle
     private let clock: Clock
 
@@ -293,11 +368,15 @@ struct CallHarness {
         separator: (any ParticipantSeparating)? = nil,
         refiner: (any TranscriptRefining)? = nil,
         refinementOn: Bool = false,
+        summarizer: (any TranscriptRefining)? = nil,
+        summariesOn: Bool = false,
         transcriptionRetryDelay: Duration = .seconds(3600)
     ) throws {
         container = try ArchiveStore.makeContainer(inMemory: true)
         let refinement = RefinementSwitch(refinementOn)
         self.refinement = refinement
+        let summaries = SummariesSwitch(summariesOn)
+        self.summaries = summaries
         languages = FakeLanguages(ready: readyLanguages)
         let clock = Clock(Date(timeIntervalSince1970: 1_800_000_000))
         self.clock = clock
@@ -313,6 +392,8 @@ struct CallHarness {
             separator: separator,
             refiner: refiner,
             refinementIsOn: { [refinement] in refinement.isOn },
+            summarizer: summarizer,
+            summariesAreOn: { [summaries] in summaries.isOn },
             now: { clock.date }
         )
     }

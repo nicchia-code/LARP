@@ -26,6 +26,8 @@ extension Notification {
 ///   one call at a time (`CallLifecycle+Transcription`).
 /// - **Separating participants**: `ParticipantSeparating` (`CallLifecycle+Separation`).
 /// - **Refining transcript**: `TranscriptRefining` (`CallLifecycle+Refinement`).
+/// - **Summarising** (the `call-summary` machine, apart from the call's own state):
+///   `CallLifecycle+Summary`, with its own process, alongside the refinement.
 /// - **Ready** and rename/delete in every state: here.
 ///
 /// To add a transition, add it to `CallStateMachine` and, if entering a state starts
@@ -58,6 +60,11 @@ final class CallLifecycle {
     @ObservationIgnored let refiner: (any TranscriptRefining)?
     /// Whether transcript refinement is on.
     @ObservationIgnored let refinementIsOn: @MainActor () -> Bool
+    /// Asks the assistant to write summaries in **Summarising**, with a process of its own
+    /// for every summary, so it never waits for a refinement.
+    @ObservationIgnored let summarizer: (any TranscriptRefining)?
+    /// Whether call summaries are on.
+    @ObservationIgnored let summariesAreOn: @MainActor () -> Bool
     @ObservationIgnored let now: @Sendable () -> Date
 
     // Recording (see CallLifecycle+Recording)
@@ -80,6 +87,10 @@ final class CallLifecycle {
     @ObservationIgnored var runningRefinements: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
     @ObservationIgnored var refinementCounter = 0
 
+    // Summaries of calls (see CallLifecycle+Summary)
+    @ObservationIgnored var runningSummaries: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored var summaryCounter = 0
+
     @ObservationIgnored private var eventTasks: [Task<Void, Never>] = []
 
     init(
@@ -94,6 +105,8 @@ final class CallLifecycle {
         separator: (any ParticipantSeparating)? = nil,
         refiner: (any TranscriptRefining)? = nil,
         refinementIsOn: @escaping @MainActor () -> Bool = { false },
+        summarizer: (any TranscriptRefining)? = nil,
+        summariesAreOn: @escaping @MainActor () -> Bool = { false },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.container = container
@@ -108,6 +121,8 @@ final class CallLifecycle {
         self.separator = separator
         self.refiner = refiner
         self.refinementIsOn = refinementIsOn
+        self.summarizer = summarizer
+        self.summariesAreOn = summariesAreOn
         self.now = now
     }
 
@@ -157,6 +172,9 @@ final class CallLifecycle {
             .separatingParticipants, .awaitingSeparationRetry, .refiningTranscript, .awaitingRefinementRetry,
         ]) {
             apply(.appLaunched(languageReady: true), to: call)
+        }
+        for call in calls(summaryIn: [.writing, .awaitingRetry]) {
+            applySummary(.appLaunched, to: call)
         }
     }
 
@@ -248,6 +266,7 @@ final class CallLifecycle {
         transcriptionRetries.removeValue(forKey: id)?.cancel()
         cancelSeparation(of: id)
         cancelRefinement(of: id)
+        cancelSummary(of: id)
         do {
             try ArchiveStore.delete(call, in: context)
         } catch {

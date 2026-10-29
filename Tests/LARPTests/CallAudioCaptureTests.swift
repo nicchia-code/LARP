@@ -50,16 +50,33 @@ struct CallAudioCaptureTests {
 
     private final class FakeSystem: SystemAudioSource {
         private let failure: (any Error)?
+        private let lost: Bool
         private let state = Mutex((started: false, stopped: false))
 
-        init(failure: (any Error)?) { self.failure = failure }
+        init(failure: (any Error)?, lost: Bool = false) {
+            self.failure = failure
+            self.lost = lost
+        }
 
+        var isLost: Bool { lost }
         var isStarted: Bool { state.withLock { $0.started } }
         var isStopped: Bool { state.withLock { $0.stopped } }
 
+        /// The system audio's track, set when the capture makes this source.
+        let pipeline = Mutex<TrackPipeline?>(nil)
+
+        /// A source that is lost has delivered one second of audio that arrived two seconds
+        /// ago, and nothing since.
         func start() throws {
             if let failure { throw failure }
             state.withLock { $0.started = true }
+            guard lost, let pipeline = pipeline.withLock({ $0 }) else { return }
+            let frames = AVAudioFrameCount(AudioFormats.storageSampleRate)
+            if let buffer = AVAudioPCMBuffer(pcmFormat: AudioFormats.storage, frameCapacity: frames) {
+                buffer.frameLength = frames
+                buffer.floatChannelData![0].update(repeating: 0.1, count: Int(frames))
+                pipeline.ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime - 2)
+            }
         }
 
         func stop() { state.withLock { $0.stopped = true } }
@@ -86,11 +103,12 @@ struct CallAudioCaptureTests {
     /// A capture over fake sources. The microphone reports `echoCancellation(false)`
     /// when it starts, as one that cannot remove the sound of the others.
     private func rig(
-        systemFailure: (any Error)? = nil, microphoneFails: Bool = false, microphoneLost: Bool = false
+        systemFailure: (any Error)? = nil, microphoneFails: Bool = false, microphoneLost: Bool = false,
+        systemLost: Bool = false
     ) throws -> Rig {
         let folder = FileManager.default.temporaryDirectory.appending(path: "larp-capture-\(UUID().uuidString)")
         let events = Box<[CaptureEvent]>([])
-        let system = FakeSystem(failure: systemFailure)
+        let system = FakeSystem(failure: systemFailure, lost: systemLost)
         let microphone = Box<FakeMicrophone?>(nil)
         let echoRemoverGiven = Box<[Bool]>([])
         let capture = CallAudioCapture(
@@ -103,7 +121,10 @@ struct CallAudioCaptureTests {
                 microphone.withLock { $0 = fake }
                 return fake
             },
-            makeSystem: { _, _ in system })
+            makeSystem: { pipeline, _, _ in
+                system.pipeline.withLock { $0 = pipeline }
+                return system
+            })
         return Rig(
             capture: capture, events: events, system: system, microphone: microphone,
             echoRemoverGiven: echoRemoverGiven, folder: folder)
@@ -231,6 +252,30 @@ struct CallAudioCaptureTests {
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
         #expect(seconds >= 2.9)
         #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)) == nil)
+    }
+
+    @Test("a system audio still lost when the recording ends gets silence in system.caf up to the end")
+    func silenceUpToTheEndWhenTheSystemAudioIsLost() async throws {
+        let rig = try rig(systemLost: true)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: .required)
+        await rig.capture.stop()
+
+        // One second of audio, then silence up to the end: the track started 3 seconds ago at least.
+        let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)))
+        #expect(seconds >= 2.9)
+    }
+
+    @Test("while the system audio is lost the microphone reports no echo state")
+    func noEchoReportWhileTheSystemAudioIsLost() async throws {
+        let rig = try rig(systemLost: true)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: .required)
+        await rig.capture.stop()
+
+        #expect(rig.receivedEvents().isEmpty)
     }
 
     @Test("a microphone that is not lost is not padded when the recording ends")

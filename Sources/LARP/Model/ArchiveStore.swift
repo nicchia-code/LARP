@@ -3,7 +3,9 @@ import SwiftData
 
 /// Creation of the SwiftData archive and deletion of calls.
 enum ArchiveStore {
-    static let schema = Schema([Call.self, TranscriptLine.self, Participant.self])
+    static let schema = Schema([
+        Call.self, TranscriptLine.self, Participant.self, CallSummary.self,
+    ])
 
     /// Container backed by the store in `~/Library/Application Support/LARP/`.
     /// Pass `inMemory: true` for tests and previews.
@@ -21,7 +23,7 @@ enum ArchiveStore {
         return try ModelContainer(for: schema, configurations: [configuration])
     }
 
-    /// Deletes a call with its lines and participants (cascade) and its
+    /// Deletes a call with its lines, participants and summary (cascade) and its
     /// `Recordings/<call id>/` folder.
     static func delete(_ call: Call, in context: ModelContext) throws {
         let folder = call.recordingsFolderURL

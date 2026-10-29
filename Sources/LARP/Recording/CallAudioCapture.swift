@@ -14,6 +14,9 @@ protocol MicrophoneSource: Sendable {
 protocol SystemAudioSource: Sendable {
     func start() throws
     func stop()
+    /// Whether the system audio is lost: it could not start again after a change of
+    /// audio devices and nothing arrives from it.
+    var isLost: Bool { get }
 }
 
 extension MicrophoneCapture: MicrophoneSource {}
@@ -35,7 +38,7 @@ final class CallAudioCapture: AudioCapturing {
     private let session = Mutex<Session?>(nil)
     private let events: EventHandler
     private let makeMicrophone: @Sendable (TrackPipeline, EchoRemover?, @escaping EventHandler) -> any MicrophoneSource
-    private let makeSystem: @Sendable (TrackPipeline, EchoRemover?) -> any SystemAudioSource
+    private let makeSystem: @Sendable (TrackPipeline, EchoRemover?, @escaping EventHandler) -> any SystemAudioSource
 
     /// `events` is called while the recording runs, from any thread. The two factories
     /// make the sources of the tracks; they are replaced in tests.
@@ -44,8 +47,8 @@ final class CallAudioCapture: AudioCapturing {
         makeMicrophone: @escaping @Sendable (TrackPipeline, EchoRemover?, @escaping EventHandler) -> any MicrophoneSource = {
             MicrophoneCapture(pipeline: $0, echoRemover: $1, events: $2)
         },
-        makeSystem: @escaping @Sendable (TrackPipeline, EchoRemover?) -> any SystemAudioSource = {
-            SystemAudioTap(pipeline: $0, reference: $1?.reference)
+        makeSystem: @escaping @Sendable (TrackPipeline, EchoRemover?, @escaping EventHandler) -> any SystemAudioSource = {
+            SystemAudioTap(pipeline: $0, echoRemover: $1, events: $2)
         }
     ) {
         self.events = events
@@ -60,7 +63,7 @@ final class CallAudioCapture: AudioCapturing {
         // The system audio is the reference of the echo canceller: it is made first, so
         // that the system audio feeds it from the start.
         let echoRemover = EchoRemover(output: micPipeline)
-        let system = makeSystem(systemPipeline, echoRemover)
+        let system = makeSystem(systemPipeline, echoRemover, events)
 
         // Without the system audio (only possible when it is optional) there is no
         // reference and nothing to remove from the microphone: the microphone is
@@ -82,7 +85,8 @@ final class CallAudioCapture: AudioCapturing {
 
         let events = events
         let microphone = makeMicrophone(micPipeline, echoRemoverInUse) { event in
-            if case .echoCancellation = event, !recordsSystemAudio { return }
+            // Nothing is removed from the microphone without the system audio, or while it is lost.
+            if case .echoCancellation = event, !recordsSystemAudio || system.isLost { return }
             events(event)
         }
         do {
@@ -118,6 +122,7 @@ final class CallAudioCapture: AudioCapturing {
         // A microphone that is still lost has nothing to say for the rest of the
         // recording: the track gets silence up to now.
         await current.micPipeline.finish(silenceUntil: current.microphone.isLost ? stoppedAt : nil)
-        await current.systemPipeline.finish()
+        // The same for the system audio that is still lost.
+        await current.systemPipeline.finish(silenceUntil: current.system.isLost ? stoppedAt : nil)
     }
 }

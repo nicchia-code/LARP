@@ -46,6 +46,7 @@ final class Recorder {
     @ObservationIgnored private let echoWarnings: any EchoCancellationWarningPresenting
     @ObservationIgnored private let systemAudioNotices: any SystemAudioUnavailablePresenting
     @ObservationIgnored private let microphoneLostNotices: any MicrophoneLostPresenting
+    @ObservationIgnored private let systemAudioLostNotices: any SystemAudioLostPresenting
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
@@ -59,6 +60,7 @@ final class Recorder {
         echoWarnings: any EchoCancellationWarningPresenting,
         systemAudioNotices: any SystemAudioUnavailablePresenting,
         microphoneLostNotices: any MicrophoneLostPresenting,
+        systemAudioLostNotices: any SystemAudioLostPresenting,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.micSource = micSource
@@ -68,6 +70,7 @@ final class Recorder {
         self.echoWarnings = echoWarnings
         self.systemAudioNotices = systemAudioNotices
         self.microphoneLostNotices = microphoneLostNotices
+        self.systemAudioLostNotices = systemAudioLostNotices
         self.now = now
         (events, eventContinuation) = AsyncStream<RecorderEvent>.makeStream(bufferingPolicy: .unbounded)
     }
@@ -81,7 +84,8 @@ final class Recorder {
         alerts: PermissionAlertPresenter(),
         echoWarnings: EchoCancellationWarningPanelController(),
         systemAudioNotices: SystemAudioUnavailablePanelController(),
-        microphoneLostNotices: MicrophoneLostPanelController()
+        microphoneLostNotices: MicrophoneLostPanelController(),
+        systemAudioLostNotices: SystemAudioLostPanelController()
     )
 
     var isRecording: Bool {
@@ -171,6 +175,14 @@ final class Recorder {
             recording.microphone = .on
             state = .recording(recording)
             microphoneLostNotices.hide()
+        case .systemAudioLost:
+            // `macos.AUDIO_DEVICES_CHANGED`: Captured → Lost (the `system-audio` machine).
+            // Nothing is removed from the microphone any more: its warning has no reason to stay.
+            echoWarnings.hide()
+            systemAudioLostNotices.show()
+        case .systemAudioRestored:
+            // `macos.AUDIO_DEVICES_CHANGED`: Lost → Captured.
+            systemAudioLostNotices.hide()
         case .systemAudioUnavailable(let permissionMissing):
             // A recording started by hand that records only the microphone.
             systemAudioNotices.show(permissionMissing: permissionMissing)
@@ -232,6 +244,7 @@ final class Recorder {
         echoWarnings.hide()
         systemAudioNotices.hide()
         microphoneLostNotices.hide()
+        systemAudioLostNotices.hide()
         tickerTask = nil
         state = .idle
         elapsedSeconds = 0

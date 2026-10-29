@@ -28,9 +28,23 @@ final class Call {
     @Relationship(deleteRule: .cascade, inverse: \Participant.call)
     var participants: [Participant] = []
 
+    /// The summary of the call; a call holds at most one. Calls stored before summaries
+    /// existed have none. Deleted with the call.
+    @Relationship(deleteRule: .cascade, inverse: \CallSummary.call)
+    var summary: CallSummary?
+
+    /// State of the summary, separate from `state`. The default value lets a store saved
+    /// before summaries existed open with every call in `.none`.
+    private var summaryStateRawValue: String = SummaryState.none.rawValue
+
     var state: CallState {
         get { CallState(rawValue: stateRawValue) ?? .ready }
         set { stateRawValue = newValue.rawValue }
+    }
+
+    var summaryState: SummaryState {
+        get { SummaryState(rawValue: summaryStateRawValue) ?? .none }
+        set { summaryStateRawValue = newValue.rawValue }
     }
 
     init(

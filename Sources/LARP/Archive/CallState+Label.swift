@@ -15,3 +15,15 @@ extension CallState {
         }
     }
 }
+
+extension SummaryState {
+    /// Progress shown for a Ready call whose summary is not done; `nil` when it has no summary
+    /// being written or waiting, or holds it.
+    var statusLabel: String? {
+        switch self {
+        case .writing: "Sintesi…"
+        case .awaitingRetry: "Sintesi da fare"
+        case .none, .written: nil
+        }
+    }
+}

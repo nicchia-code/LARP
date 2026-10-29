@@ -68,4 +68,50 @@ struct CallSearchTests {
         let result = CallSearch.filter([first, second, third], query: "budget")
         #expect(result.map(\.id) == [first.id, third.id])
     }
+
+    private func makeSummarisedCall() -> Call {
+        let call = makeCall(title: "Weekly", participants: ["Zoë"])
+        call.summary = CallSummary(
+            keyConcepts: ["Il budget è alto"],
+            decisions: [],
+            nextSteps: [SummaryNextStep(text: "Inviare il piano", owner: "Partecipante 1")],
+            text: "Parlato anche di Partecipante 1 e Partecipante 2.",
+            language: "it-IT"
+        )
+        call.summaryState = .written
+        return call
+    }
+
+    @Test("it matches the text of the summary and its section titles, ignoring case and accents")
+    func matchesSummary() {
+        let call = makeSummarisedCall()
+        #expect(CallSearch.matches(call, query: "BUDGET E ALTO"))
+        #expect(CallSearch.matches(call, query: "concetti chiave"))
+        #expect(CallSearch.matches(call, query: "prossimi passi"))
+        #expect(CallSearch.matches(call, query: "inviare il piano"))
+        #expect(!CallSearch.matches(call, query: "ferie"))
+    }
+
+    @Test("the summary is searched with the current names of the participants")
+    func matchesSummaryWithNames() {
+        let call = makeSummarisedCall()
+        #expect(CallSearch.matches(call, query: "piano (zoe)"))
+        #expect(CallSearch.matches(call, query: "di zoe e partecipante 2"))
+        #expect(!CallSearch.matches(call, query: "piano (partecipante 1)"))
+    }
+
+    @Test("the word for an empty list is not searched")
+    func emptyListWordIsNotSearched() {
+        let call = makeSummarisedCall()
+        #expect(!CallSearch.matches(call, query: "nessuno"))
+    }
+
+    @Test("a summary stays searchable whatever its state")
+    func summaryStateDoesNotMatter() {
+        let call = makeSummarisedCall()
+        call.summaryState = .awaitingRetry
+        #expect(CallSearch.matches(call, query: "budget"))
+        call.summaryState = .writing
+        #expect(CallSearch.matches(call, query: "budget"))
+    }
 }

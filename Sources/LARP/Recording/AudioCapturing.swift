@@ -68,6 +68,11 @@ enum CaptureEvent: Equatable, Sendable {
     case microphoneLost
     /// The microphone is being recorded again after it was lost.
     case microphoneRestored
+    /// The capture of the system audio could not start again after a change of audio
+    /// devices: the recording goes on with the microphone only, without echo removal.
+    case systemAudioLost
+    /// The system audio is being recorded again after it was lost.
+    case systemAudioRestored
 }
 
 /// Captures the microphone and the system audio of a recording into

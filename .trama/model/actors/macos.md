@@ -23,4 +23,4 @@ The download of the speech model for the chosen transcription language has faile
 The Mac is connected to the internet again.
 
 ### AUDIO_DEVICES_CHANGED
-The microphone or the audio output of the Mac has changed, for example because headphones were plugged in or unplugged.
+The microphone or the audio output of the Mac has changed, for example because headphones were plugged in or unplugged, or one of them has changed its sample rate, for example because Bluetooth headphones switched to their call mode when a call app started using their microphone.

@@ -34,13 +34,25 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 
 - A small panel under the menu bar icon that does not steal focus says "Microfono non disponibile: la registrazione prosegue senza la tua voce."; it stays while the microphone is lost and disappears when the microphone comes back or the recording ends.
 
+## system-audio/Lost
+
+- A small panel under the menu bar icon that does not steal focus says "Audio di sistema non disponibile: la registrazione prosegue senza gli altri partecipanti."; it stays while the system audio is lost and disappears when the system audio comes back or the recording ends.
+- When the microphone is lost at the same time, its panel and this one are shown stacked, each appearing and disappearing on its own.
+
 ## main-window
 
 - Split view: on the left a search field and the list of calls, newest first, each with title, date and duration; on the right the selected call.
-- Each call in the list shows its state when it is not Ready: "In registrazione", "In attesa della lingua", "Trascrizione…", "Separazione voci…", "Voci da separare", "Rifinitura testo…", "Testo da rifinire".
-- The selected call shows the title (editable in place), date, duration, the app of the call, the playback controls and the transcript; each line shows the speaker, the start time as mm:ss and the text.
+- Each call in the list shows its state when it is not Ready: "In registrazione", "In attesa della lingua", "Trascrizione…", "Separazione voci…", "Voci da separare", "Rifinitura testo…", "Testo da rifinire". A call that is Ready shows "Sintesi…" while its summary is being written and "Sintesi da fare" while the summary waits to be tried again.
+- The selected call shows the title (editable in place), date, duration, the app of the call, the playback controls and, below them, a segmented control "Sintesi" / "Trascrizione" that shows one of the two; selecting a call opens it on "Sintesi" when it has a summary, otherwise on "Trascrizione".
+- In "Trascrizione" each line shows the speaker, the start time as mm:ss and the text.
 - Clicking a speaker name of a participant allows renaming it.
-- Toolbar actions: "Esporta…" (disabled when there is no transcript), "Rifinisci testo" (enabled only when transcript refinement is on and the call is Ready or in "Testo da rifinire"), "Ripristina originale" (enabled only when the call has been refined, also with refinement off) and "Elimina", which asks for confirmation before deleting.
+- Toolbar actions: "Esporta…" (disabled when there is no transcript), "Rifinisci testo" (enabled only when transcript refinement is on and the call is Ready or in "Testo da rifinire"), "Ripristina originale" (enabled only when the call has been refined, also with refinement off), "Sintetizza" (enabled only when call summaries are on, the transcript has at least one line, the participants have been told apart and no summary is being written for the call) and "Elimina", which asks for confirmation before deleting.
+
+## call-summary
+
+- "Sintesi" shows the sections in a fixed order, key concepts, decisions, next steps, then the free text, each with its title and its items as a bulleted list; a next step with someone to do it shows the name after the text.
+- The summary is read-only; its text can be selected and copied.
+- "Sintesi" shows, above the summary or in its place: "Sintesi in corso…" while it is being written, "Sintesi non riuscita, nuovo tentativo appena possibile" while it waits to be tried again, and "Nessuna sintesi" when the call has none and none is being written.
 
 ## playback
 
@@ -49,5 +61,5 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 
 ## settings
 
-- The settings window has the transcription language ("Italiano", "English") with its status ("Pronta", "Download in corso…", "Non disponibile, nuovo tentativo appena possibile"), the "Rifinisci il testo con omp" switch and the "Avvia all'accesso" switch.
-- While "Rifinisci il testo con omp" is on, the status of omp is shown next to it: "Verifica in corso…", "omp pronto" or "omp non trovato".
+- The settings window has the transcription language ("Italiano", "English") with its status ("Pronta", "Download in corso…", "Non disponibile, nuovo tentativo appena possibile"), the "Rifinisci il testo con omp" switch, the "Sintesi con omp" switch and the "Avvia all'accesso" switch.
+- While "Rifinisci il testo con omp" or "Sintesi con omp" is on, the status of omp is shown once, below the two switches: "Verifica in corso…", "omp pronto" or "omp non trovato".

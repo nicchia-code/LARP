@@ -26,10 +26,14 @@ extension CallLifecycle {
     }
 
     /// What the archive says about the state of the call: a transcription that
-    /// failed says so, and that it will be tried again.
+    /// failed says so, and that it will be tried again. A call that is Ready says how
+    /// its summary is going.
     func statusLabel(of call: Call) -> String? {
         if call.state == .transcribing, failedTranscriptions.contains(call.id) {
             return "Trascrizione non riuscita, nuovo tentativo a breve"
+        }
+        if call.state == .ready {
+            return call.summaryState.statusLabel
         }
         return call.state.statusLabel
     }

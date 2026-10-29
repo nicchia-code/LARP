@@ -69,4 +69,71 @@ struct TranscriptExportTests {
         #expect(ArchiveFormat.duration(754) == "12:34")
         #expect(ArchiveFormat.duration(3725) == "1:02:05")
     }
+
+    @Test("a call with a summary has it between the info line and the lines, with current names")
+    func markdownWithSummary() {
+        let call = makeCall(title: "Weekly")
+        call.participants.append(Participant(number: 2))
+        call.summary = CallSummary(
+            keyConcepts: ["Budget alto", "Scadenza vicina"],
+            decisions: [],
+            nextSteps: [
+                SummaryNextStep(text: "Inviare il piano", owner: "Partecipante 1"),
+                SummaryNextStep(text: "Prenotare la sala", owner: "Io"),
+                SummaryNextStep(text: "Chiamare il cliente"),
+            ],
+            text: "Partecipante 2 resta in dubbio.",
+            language: "it-IT"
+        )
+        let expected = """
+            # Weekly
+
+            27 ottobre 2026, 10:41 · durata 12:34 · lingua italiano (Italia)
+
+            ## Sintesi
+
+            ### Concetti chiave
+
+            - Budget alto
+            - Scadenza vicina
+
+            ### Decisioni
+
+            Nessuno
+
+            ### Prossimi passi
+
+            - Inviare il piano (Anna)
+            - Prenotare la sala (Io)
+            - Chiamare il cliente
+
+            ### Altro
+
+            Partecipante 2 resta in dubbio.
+
+            ## Trascrizione
+
+            **Io** [00:03]: Ciao a tutti
+
+            **Anna** [01:05]: Buongiorno
+
+            """
+        #expect(TranscriptExport.markdown(for: call) == expected)
+    }
+
+    @Test("an English summary has English titles and leaves out an empty free text")
+    func markdownWithEnglishSummary() {
+        let call = makeCall(title: "Weekly")
+        call.summary = CallSummary(keyConcepts: ["Budget"], language: "en-US")
+        let markdown = TranscriptExport.markdown(for: call)
+        #expect(
+            markdown.contains(
+                "## Sintesi\n\n### Key concepts\n\n- Budget\n\n### Decisions\n\nNone\n\n### Next steps\n\nNone\n\n## Trascrizione\n\n"))
+        #expect(!markdown.contains("### Other"))
+    }
+
+    @Test("a call without a summary has no ## headings")
+    func markdownWithoutSummary() {
+        #expect(!TranscriptExport.markdown(for: makeCall(title: "Weekly")).contains("##"))
+    }
 }

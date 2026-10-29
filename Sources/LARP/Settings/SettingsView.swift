@@ -1,20 +1,26 @@
 import SwiftUI
 
 /// Content of the Settings scene: the transcription language with its status,
-/// the "Rifinisci il testo con omp" switch with the status of omp, and the
-/// "Avvia all'accesso" switch. Values live in `UserDefaults` under the
-/// keys of `SettingsKey`.
+/// the "Rifinisci il testo con omp" and "Sintesi con omp" switches with the status
+/// of omp once below them, and the "Avvia all'accesso" switch. Values live in
+/// `UserDefaults` under the keys of `SettingsKey`.
 struct SettingsView: View {
     private let language: TranscriptionLanguageController
     private let refinement: TranscriptRefinementController
+    private let summaries: CallSummariesController
+    private let assistantStatus: AssistantStatusController
     @State private var launchAtLogin = LaunchAtLogin()
 
     init(
         language: TranscriptionLanguageController = .shared,
-        refinement: TranscriptRefinementController = .shared
+        refinement: TranscriptRefinementController = .shared,
+        summaries: CallSummariesController = .shared,
+        assistantStatus: AssistantStatusController = .shared
     ) {
         self.language = language
         self.refinement = refinement
+        self.summaries = summaries
+        self.assistantStatus = assistantStatus
     }
 
     var body: some View {
@@ -51,14 +57,24 @@ struct SettingsView: View {
                         set: { $0 ? refinement.turnOn() : refinement.turnOff() }
                     )
                 ) {
-                    HStack(spacing: 6) {
-                        Text("Rifinisci il testo con omp")
-                        if let text = Self.assistantText(refinement.state) {
-                            if refinement.state == .checking {
+                    Text("Rifinisci il testo con omp")
+                }
+                Toggle(
+                    isOn: Binding(
+                        get: { summaries.isOn },
+                        set: { $0 ? summaries.turnOn() : summaries.turnOff() }
+                    )
+                ) {
+                    Text("Sintesi con omp")
+                }
+                if let text = Self.assistantText(assistantStatus.state) {
+                    LabeledContent("omp") {
+                        HStack(spacing: 6) {
+                            if assistantStatus.state == .checking {
                                 ProgressView().controlSize(.small)
                             }
                             Text(text)
-                                .foregroundStyle(refinement.state == .assistantMissing ? .orange : .secondary)
+                                .foregroundStyle(assistantStatus.state == .assistantMissing ? .orange : .secondary)
                         }
                     }
                 }
@@ -89,7 +105,7 @@ struct SettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             launchAtLogin.refresh()
-            refinement.openSettings()
+            assistantStatus.openSettings()
         }
     }
 
@@ -102,10 +118,10 @@ struct SettingsView: View {
         }
     }
 
-    /// Status of omp shown next to the switch; none while refinement is off.
-    static func assistantText(_ state: TranscriptRefinementController.State) -> String? {
+    /// Status of omp shown below the switches; none while omp is not needed.
+    static func assistantText(_ state: AssistantStatusController.State) -> String? {
         switch state {
-        case .off: nil
+        case .notNeeded: nil
         case .checking: "Verifica in corso…"
         case .assistantReady: "omp pronto"
         case .assistantMissing: "omp non trovato"

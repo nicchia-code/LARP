@@ -1,0 +1,30 @@
+---
+column: done
+technical: false
+refs:
+  - call-summary
+  - user.SUMMARIZE_CALL
+  - requirements/rules#call-summary
+  - requirements/tech#call-summary
+  - requirements/quality#General
+drift: null
+proposal: 15u4f1ps
+agent: false
+created: 2026-10-28T19:23:51.370Z
+finished: 2026-10-28T19:33:47.827Z
+---
+# Scrittura della sintesi con omp
+
+Quando lo stato della sintesi è «nessuna» e arriva `call.PARTICIPANTS_SEPARATED` (oggi in Call/CallLifecycle+Separation.swift, `participantsSeparated(refinementOn:)`), la sintesi passa a Summarising solo se l'interruttore «Sintesi con omp» è acceso e la trascrizione ha almeno una riga. Parte da sola subito dopo la separazione, insieme alla rifinitura se anche questa è accesa, senza mai aspettarla: ognuna usa il proprio processo `omp acp` e il fallimento dell'una non ferma l'altra. Lo stato on/off e il segnale di spegnimento si leggono dal controller di `assistant-status` e dall'interruttore `call-summaries`, che non fanno parte di questo Task.
+
+`user.SUMMARIZE_CALL` porta a Summarising: da «nessuna» solo se le sintesi sono accese, la trascrizione ha almeno una riga e i partecipanti sono stati distinti (anche per chiamate vecchie); da Awaiting summary retry riprova subito; da Summarised, solo se le sintesi sono accese, riscrive la sintesi dalle righe originali. Il lifecycle espone `canSummarize(_:)` e `summarize(_:)` (sul modello di `canRefine`/`refineTranscript` in Call/CallLifecycle+Refinement.swift), usati dal pulsante «Sintetizza» e dalla vista della sintesi del Task della finestra principale; `canSummarize` è falso per una chiamata senza righe, che non va mai in Summarising.
+
+In Summarising si invia all'assistente, mai l'audio, per ogni riga in ordine di inizio: numero di riga, parlante originale come "Io" o "Partecipante <numero>" (mai un nome dato dall'utente), inizio, fine e testo originale (`originalText ?? text`, come in `RefinementRequest`), in JSON (`number`, `speaker`, `start`, `end`, `text`). Mai titolo, nomi, date o app della chiamata. La sintesi parte sempre dalle righe originali: rifinire o ripristinare la trascrizione non la cambia. Le istruzioni fisse dicono che le righe vengono da un riconoscimento vocale automatico e da una separazione automatica delle voci, quindi parole e parlanti possono essere sbagliati, e che va dato loro un senso senza segnalare gli errori (nulla di questo è mostrato nell'app); chiedono di scrivere nella lingua di trascrizione della chiamata (italiano o inglese), di chiamare i partecipanti solo "Io" e "Partecipante <numero>" senza indovinare nomi, di indicare il responsabile di un prossimo passo solo quando è chiaro, e di rispondere solo con un oggetto JSON con `keyConcepts` (lista di stringhe), `decisions` (lista di stringhe), `nextSteps` (lista di oggetti con `text` e `owner` facoltativo) e `other` (stringa, anche vuota); ogni lista può essere vuota. La trascrizione resta leggibile intanto.
+
+Trasporto: ogni sintesi avvia il proprio `omp acp` come descritto in `assistant-status` (ricerca tramite login shell con `LoginShellOmpLocator`, `--no-tools`, `--no-session`, cartella temporanea vuota tramite `Omp.withWorkingDirectory`, nessuna capacità dichiarata, ogni `session/request_permission` rifiutata, modello predefinito di omp), apre una sessione con `session/new` e invia un solo `session/prompt`, raccogliendo il testo dai `session/update` fino alla fine. Si riusa il prompt generico di `OmpTranscriptRefiner.refine(prompt:)` / `TranscriptRefining` (Assistant/TranscriptRefiner.swift) e `ACPClient`, generalizzandoli se serve, senza nuove dipendenze. Il lavoro gira fuori dal main actor e non blocca mai interfaccia, registrazione o rifinitura. Il limite di 10 minuti conta dall'avvio del processo: scaduto, il processo viene terminato e la sintesi fallisce.
+
+La risposta si salva solo se è una sintesi completa e ogni responsabile è "Io" o "Partecipante <numero>" di un partecipante della chiamata; allora, in un solo salvataggio, sostituisce la sintesi precedente e si emette `SUMMARY_WRITTEN` → Summarised. Altrimenti (omp irraggiungibile, nessuna risposta in tempo, risposta non valida) non si salva nulla, la sintesi precedente resta e si emette `SUMMARY_FAILED` → Awaiting summary retry. Da lì `macos.NETWORK_AVAILABLE` (oggi `networkAvailable()`) e `macos.APP_LAUNCHED` riprovano. Un `macos.APP_LAUNCHED` trovato in Summarising (app chiusa durante la scrittura) fa ripartire la sintesi.
+
+`user.TURN_OFF_SUMMARY` in Summarising termina subito il processo; in Summarising o Awaiting summary retry porta a «nessuna» se la chiamata non aveva una sintesi prima, a Summarised conservando la precedente se l'aveva; nessun altro tentativo. Le sintesi esistenti restano visibili, cercabili ed esportabili anche a sintesi spente. Con `call.DELETED` da qualsiasi stato la sintesi in scrittura si ferma (processo terminato) e viene eliminata con la chiamata (Deleted), sul modello di `cancelRefinement(of:)`.
+
+Riservatezza: l'audio non lascia mai il Mac; le righe escono verso omp solo per la rifinitura mentre questa è accesa e per la sintesi solo mentre le sintesi sono accese, limitate a quanto elencato sopra e in `requirements/rules#call`. L'app usa la rete solo per scaricare i modelli Apple e FluidAudio; omp raggiunge il fornitore configurato in omp. I test automatici aggiunti sono deterministici: aspettano l'effetto che verificano (per esempio la chiamata attesa su un fake), mai uno stato intermedio né un tempo fisso.

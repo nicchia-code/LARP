@@ -1,7 +1,8 @@
 import SwiftData
 import SwiftUI
 
-/// The selected call: editable title, date, duration, call app, playback controls and transcript.
+/// The selected call: editable title, date, duration, call app, playback controls and, below
+/// them, its summary or its transcript, one at a time as the user chooses.
 struct CallDetailView: View {
     let call: Call
     let playback: PlaybackController
@@ -11,11 +12,20 @@ struct CallDetailView: View {
     @FocusState private var titleIsFocused: Bool
     @State private var participantToRename: Participant?
     @State private var participantDraft = ""
+    @State private var tab: Tab
+
+    /// What the call shows below the playback controls.
+    private enum Tab: Hashable {
+        case summary
+        case transcript
+    }
 
     init(call: Call, playback: PlaybackController) {
         self.call = call
         self.playback = playback
         _titleDraft = State(initialValue: call.title ?? "")
+        // `user.SELECT_CALL`: the call opens on its summary when it has one, else on the transcript.
+        _tab = State(initialValue: call.summary != nil ? .summary : .transcript)
     }
 
     var body: some View {
@@ -25,7 +35,17 @@ struct CallDetailView: View {
                 PlaybackControlsView(playback: playback)
             }
             Divider()
-            transcript
+            Picker("Contenuto", selection: $tab) {
+                Text("Sintesi").tag(Tab.summary)
+                Text("Trascrizione").tag(Tab.transcript)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 280)
+            switch tab {
+            case .summary: CallSummaryView(call: call)
+            case .transcript: transcript
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

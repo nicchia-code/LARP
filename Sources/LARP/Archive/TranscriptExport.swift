@@ -42,8 +42,9 @@ enum ArchiveFormat {
 
 /// Markdown export of the transcript of a call.
 enum TranscriptExport {
-    /// An H1 with the title, a line with date, time, duration and language, then one
-    /// paragraph per line as `**<speaker>** [<mm:ss>]: <text>`.
+    /// An H1 with the title, a line with date, time, duration and language, then, when the call
+    /// has a summary, `## Sintesi` with its sections and `## Trascrizione`, then one paragraph
+    /// per line as `**<speaker>** [<mm:ss>]: <text>`.
     static func markdown(for call: Call) -> String {
         var paragraphs = [
             "# \(call.displayTitle)",
@@ -51,6 +52,10 @@ enum TranscriptExport {
                 + "durata \(ArchiveFormat.duration(call.duration)) · "
                 + "lingua \(ArchiveFormat.language(call.transcriptionLanguage))",
         ]
+        if let summary = SummaryContent(call: call) {
+            paragraphs.append(contentsOf: summary.markdownParagraphs)
+            paragraphs.append("## Trascrizione")
+        }
         for line in call.sortedLines {
             paragraphs.append("**\(line.speakerName)** [\(ArchiveFormat.clock(line.start))]: \(line.text)")
         }

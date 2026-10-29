@@ -76,4 +76,40 @@ struct EngineTrackPlayerTests {
         player.start(at: 5) { finished += 1 }
         #expect(finished == 1)
     }
+
+    @Test(
+        "a change of the audio output while playing goes on from the time reached, until the end",
+        .tags(.requiresHardware))
+    func outputChangeWhilePlaying() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let mic = try makeAudioFile(seconds: 0.8, in: folder, name: "mic.caf")
+        let system = try makeAudioFile(seconds: 1, in: folder, name: "system.caf")
+        let player = EngineTrackPlayer(urls: [mic, system])
+
+        var finished = 0
+        var interrupted = 0
+        player.onInterrupted = { _ in interrupted += 1 }
+        player.start(at: 0.3) { finished += 1 }
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: player.engine)
+        #expect(player.currentTime >= 0.3)
+        await waitUntil { finished > 0 }
+        #expect(finished == 1)
+        #expect(interrupted == 0)
+    }
+
+    @Test("a change of the audio output while stopped keeps the player stopped", .tags(.requiresHardware))
+    func outputChangeWhileStopped() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let mic = try makeAudioFile(seconds: 0.3, in: folder, name: "mic.caf")
+        let player = EngineTrackPlayer(urls: [mic])
+
+        var interrupted = 0
+        player.onInterrupted = { _ in interrupted += 1 }
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: player.engine)
+        #expect(!player.engine.isRunning)
+        #expect(interrupted == 0)
+        player.unload()
+    }
 }

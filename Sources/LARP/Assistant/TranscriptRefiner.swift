@@ -9,7 +9,8 @@ enum RefinementError: Error, Equatable {
     case lineWithoutParticipant
 }
 
-/// Asks the assistant for the corrected lines of a transcript. Replaceable in tests.
+/// Sends a prompt to the assistant and returns its answer: used to refine a transcript and
+/// to write the summary of a call, each with its own process. Replaceable in tests.
 protocol TranscriptRefining: Sendable {
     /// Sends `prompt` to the assistant and returns the text of its answer. Runs off
     /// the main actor. Throws when the assistant is not found, does not answer, answers
@@ -18,7 +19,7 @@ protocol TranscriptRefining: Sendable {
     @concurrent func refine(prompt: String) async throws -> String
 }
 
-/// Refines through omp: every call starts its own `omp acp` process, opens one
+/// Asks omp: every request starts its own `omp acp` process, opens one
 /// session and sends one prompt (see `Omp` and `ACPClient`).
 struct OmpTranscriptRefiner: TranscriptRefining {
     /// Time omp has, from the start of its process, to answer completely.

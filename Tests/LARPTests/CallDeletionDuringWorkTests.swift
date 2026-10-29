@@ -27,8 +27,8 @@ private final class GatedRefiner: TranscriptRefining {
     }
 }
 
-/// Deleting a call while its transcription, the separation of its participants or its
-/// refinement runs (`requirements/quality#call`). The work ends only after the call is
+/// Deleting a call while its transcription, the separation of its participants, its
+/// refinement or its summary runs (`requirements/quality#call`). The work ends only after the call is
 /// deleted, with the result or the failure the test chooses, and after the test has let
 /// go of the archive: the situation that crashed the test process on the CI runner,
 /// where the work of a deleted call read the archive once nothing else held it.
@@ -130,6 +130,38 @@ struct CallDeletionDuringWorkTests {
 
         #expect(try allCalls(lifecycle).isEmpty)
         #expect(lifecycle.runningRefinements.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    @Test("summary: the process is ended, the call stays deleted and nothing is saved when the work ends", arguments: Ending.allCases)
+    func summary(ending: Ending) async throws {
+        let gate = WorkGate()
+        let answer = #"{"keyConcepts": ["Budget"], "decisions": [], "nextSteps": [{"text": "Scrivere", "owner": "Partecipante 1"}], "other": ""}"#
+        let summarizer = FakeSummarizer(.held(gate, answer: ending == .fails ? nil : answer))
+        var harness: CallHarness? = try CallHarness(summarizer: summarizer, summariesOn: true)
+        let lifecycle = try #require(harness).lifecycle
+        let call = try #require(harness).insertCall(.ready)
+        let participant = Participant(number: 1)
+        call.participants.append(participant)
+        call.lines.append(TranscriptLine(speakerKind: .me, start: 0, end: 1, text: "Ciao"))
+        call.lines.append(TranscriptLine(speakerKind: .participant, participant: participant, start: 1, end: 2, text: "Buongiorno"))
+        try lifecycle.context.save()
+        let folder = call.recordingsFolderURL
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        lifecycle.summarize(call)
+        #expect(await eventually(harness) { summarizer.prompts.count == 1 })
+
+        lifecycle.deleteCall(call)
+        harness = nil
+        gate.open()
+        await lifecycle.waitUntilSummaryIdle()
+
+        // The summary was cancelled, which ends its process, before it came to an end.
+        #expect(summarizer.endedCancelledCount == 1)
+        #expect(try allCalls(lifecycle).isEmpty)
+        #expect(try lifecycle.context.fetch(FetchDescriptor<CallSummary>()).isEmpty)
+        #expect(lifecycle.runningSummaries.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: folder.path))
     }
 }

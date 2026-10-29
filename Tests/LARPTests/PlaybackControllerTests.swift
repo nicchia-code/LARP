@@ -9,6 +9,8 @@ private final class FakePlayer: TrackPlayer {
     var currentTime: TimeInterval = 0
     private(set) var starts: [TimeInterval] = []
     private(set) var stops = 0
+    private(set) var unloads = 0
+    var onInterrupted: (@MainActor (TimeInterval) -> Void)?
     private var onFinished: (@MainActor () -> Void)?
 
     init(duration: TimeInterval) {
@@ -24,6 +26,12 @@ private final class FakePlayer: TrackPlayer {
     func stop() {
         stops += 1
         onFinished = nil
+    }
+
+    func unload() {
+        unloads += 1
+        onFinished = nil
+        onInterrupted = nil
     }
 
     func finish() {
@@ -199,6 +207,47 @@ struct PlaybackControllerTests {
         call.state = .transcribing
         controller.show(call)
         #expect(controller.canPlay)
+    }
+
+    @Test("when the audio cannot play on the new output, Playing becomes Paused at the time reached")
+    func outputChangeInterruptsPlayback() {
+        let (controller, player) = makeController()
+        controller.show(makeCall())
+        controller.setTimeline([LineTiming(start: 0, end: 5), LineTiming(start: 5, end: 9)])
+        controller.play()
+
+        player.onInterrupted?(7)
+        #expect(controller.state == .paused)
+        #expect(controller.currentTime == 7)
+        #expect(controller.currentLineIndex == 1)
+
+        controller.play()
+        #expect(controller.state == .playing)
+        #expect(player.starts == [0, 7])
+    }
+
+    @Test("an interruption does not change Paused or Stopped")
+    func outputChangeWhileNotPlaying() {
+        let (controller, player) = makeController()
+        controller.show(makeCall())
+        player.onInterrupted?(7)
+        #expect(controller.state == .stopped)
+        #expect(controller.currentTime == 0)
+
+        controller.play()
+        player.currentTime = 3
+        controller.pause()
+        player.onInterrupted?(9)
+        #expect(controller.state == .paused)
+        #expect(controller.currentTime == 3)
+    }
+
+    @Test("showing another call or none unloads the player")
+    func unloadsThePlayer() {
+        let (controller, player) = makeController()
+        controller.show(makeCall())
+        controller.show(nil)
+        #expect(player.unloads == 1)
     }
 
     @Test("the line being heard follows the time of the audio")

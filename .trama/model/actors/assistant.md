@@ -1,6 +1,6 @@
 # Assistant
 
-The AI assistant the user has installed and configured on the Mac, outside the app. It receives the text of a transcript, never the audio, and answers with corrections, using the language model and the provider it is configured with.
+The AI assistant the user has installed and configured on the Mac, outside the app. It receives the text of a transcript, never the audio, and answers with corrections or with a summary of the call, using the language model and the provider it is configured with.
 
 ## Events
 

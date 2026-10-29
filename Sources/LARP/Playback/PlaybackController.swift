@@ -7,6 +7,9 @@ import Observation
 /// - `Playing`: the audio plays and `currentLineIndex` follows it.
 /// - `Paused`: the audio is held where it was.
 ///
+/// A change of the audio output of the Mac (`macos.AUDIO_DEVICES_CHANGED`) is handled by the
+/// player: Playing goes on from the time reached, or becomes Paused if the audio cannot play.
+///
 /// Showing another call (`show(_:)`), closing the window (`stop()`) and deleting
 /// the call (`show(nil)`) all lead back to `Stopped`.
 @MainActor
@@ -65,6 +68,7 @@ final class PlaybackController {
             return
         }
         let player = makePlayer([call.micAudioURL, call.systemAudioURL])
+        player.onInterrupted = { [weak self] time in self?.playbackInterrupted(at: time) }
         self.player = player
         canPlay = player.duration > 0
         duration = canPlay ? player.duration : call.duration
@@ -152,8 +156,20 @@ final class PlaybackController {
         stop()
     }
 
+    /// `macos.AUDIO_DEVICES_CHANGED` while Playing, when the audio cannot play on the current
+    /// output: Playing → Paused at the time reached, without any notice. The player is already
+    /// halted; the next play starts it again on the output current at that moment.
+    private func playbackInterrupted(at time: TimeInterval) {
+        guard state == .playing else { return }
+        currentTime = min(max(time, 0), duration)
+        stopTicking()
+        state = .paused
+        currentLineIndex = timeline.lineIndex(at: currentTime)
+    }
+
     private func unload() {
         stop()
+        player?.unload()
         player = nil
         callID = nil
         canPlay = false

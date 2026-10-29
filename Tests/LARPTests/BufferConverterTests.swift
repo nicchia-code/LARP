@@ -40,4 +40,21 @@ struct BufferConverterTests {
         // One second of audio, minus what the sample rate converter still holds back.
         #expect(abs(frames - 16_000) < 1_600)
     }
+
+    /// One converter that gets buffers of different sample rates, as the microphone or the
+    /// system audio deliver them when their device changes its rate: every buffer is converted
+    /// from the format it carries, so each stretch keeps its duration.
+    @Test("a converter that gets buffers of changing sample rates keeps the duration of every stretch")
+    func followsTheFormatOfEveryBuffer() throws {
+        let converter = BufferConverter(target: AudioFormats.storage)
+        for rate in [48_000.0, 24_000, 16_000, 44_100, 48_000] {
+            let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false))
+            var frames = 0
+            for _ in 0..<20 {
+                frames += Int(try converter.convert(buffer(format: format, seconds: 0.1)).frameLength)
+            }
+            // Two seconds, minus what the sample rate converter holds back.
+            #expect(abs(frames - 32_000) < 1_600, "\(rate) Hz gave \(frames) frames")
+        }
+    }
 }

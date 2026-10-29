@@ -25,6 +25,8 @@ final class EchoRemover: @unchecked Sendable {
 
     // Everything below is confined to `queue`.
     private var canceller: EchoCanceller?
+    /// `false` while the system audio is lost.
+    private var hasReference = true
     private var referenceConverter = BufferConverter(target: AudioFormats.storage)
     private var microphoneConverter = BufferConverter(target: AudioFormats.storage)
     private var referenceSamples: [Float] = []
@@ -45,18 +47,42 @@ final class EchoRemover: @unchecked Sendable {
     /// scratch: at the start of a recording and every time the microphone starts again
     /// (new microphone or output). Returns `false` when the echo canceller cannot be
     /// created: the microphone is then recorded as captured.
+    ///
+    /// While the system audio is lost (`suspendReference()`) there is no reference: nothing
+    /// is created and this returns `false`.
     func reset() -> Bool {
+        queue.sync { restart() }
+    }
+
+    /// The system audio is lost: the echo canceller goes away and the microphone goes on to
+    /// its track as captured, until `resumeReference()`.
+    func suspendReference() {
         queue.sync {
-            canceller = EchoCanceller()
-            referenceConverter = BufferConverter(target: AudioFormats.storage)
-            microphoneConverter = BufferConverter(target: AudioFormats.storage)
-            referenceSamples.removeAll(keepingCapacity: true)
-            microphoneSamples.removeAll(keepingCapacity: true)
-            let created = canceller != nil
-            isActive.withLock { $0 = created }
-            if !created { Self.logger.error("The echo canceller could not be created") }
-            return created
+            hasReference = false
+            _ = restart()
         }
+    }
+
+    /// The system audio is captured again: echo removal resumes as at the start of a
+    /// recording. Returns whether the echo canceller could be created.
+    func resumeReference() -> Bool {
+        queue.sync {
+            hasReference = true
+            return restart()
+        }
+    }
+
+    /// On the queue.
+    private func restart() -> Bool {
+        referenceConverter = BufferConverter(target: AudioFormats.storage)
+        microphoneConverter = BufferConverter(target: AudioFormats.storage)
+        referenceSamples.removeAll(keepingCapacity: true)
+        microphoneSamples.removeAll(keepingCapacity: true)
+        canceller = hasReference ? EchoCanceller() : nil
+        let created = canceller != nil
+        isActive.withLock { $0 = created }
+        if hasReference && !created { Self.logger.error("The echo canceller could not be created") }
+        return created
     }
 
     /// Waits until everything handed over so far has gone through the echo canceller and

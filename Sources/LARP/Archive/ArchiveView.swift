@@ -111,6 +111,11 @@ struct ArchiveView: View {
             }
             .disabled(selectedCall.map { !lifecycle.canRestore($0) } ?? true)
 
+            Button("Sintetizza", systemImage: "text.badge.star") {
+                if let call = selectedCall { lifecycle.summarize(call) }
+            }
+            .disabled(selectedCall.map { !lifecycle.canSummarize($0) } ?? true)
+
             Button("Elimina", systemImage: "trash") {
                 isConfirmingDelete = true
             }

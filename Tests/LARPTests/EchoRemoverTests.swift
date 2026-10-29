@@ -115,4 +115,33 @@ struct EchoRemoverTests {
         let reduction: Float = 20 * log10(before / after)
         #expect(reduction >= 15, "echo reduced by \(reduction) dB")
     }
+
+    @Test("when the sample rate of either source changes the microphone track goes on at its speed")
+    func followsTheFormatOfBothSources() async throws {
+        let folder = try Self.makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let sink = CollectingSink()
+        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: sink)
+        let remover = EchoRemover(output: pipeline)
+        #expect(remover.reset())
+
+        let microphoneTone = FakeTone(frequency: 440, channels: 1)
+        let referenceTone = FakeTone(frequency: 1_000, channels: 2)
+        // Each source goes through its own sequence of rates, 1.5 seconds at each.
+        let microphoneRates = [48_000.0, 24_000, 16_000, 48_000]
+        let referenceRates = [48_000.0, 16_000, 24_000, 48_000]
+        for phase in microphoneRates.indices {
+            for _ in 0..<15 {
+                let reference = referenceTone.next(seconds: 0.1, rate: referenceRates[phase], labelRate: referenceRates[phase])
+                remover.reference.ingest(borrowing: reference.buffer, arrival: reference.arrival)
+                let microphone = microphoneTone.next(seconds: 0.1, rate: microphoneRates[phase], labelRate: microphoneRates[phase])
+                remover.microphone.ingest(borrowing: microphone.buffer, arrival: microphone.arrival)
+            }
+        }
+        await remover.finish()
+        await pipeline.finish()
+
+        // Six seconds, less the frame waiting at the end and what the sample rate converters hold back.
+        #expect(abs(sink.received.count - 6 * 16_000) < 1_600)
+    }
 }

@@ -61,114 +61,206 @@ private func waitUntil(
     Issue.record("Condition not reached in time", sourceLocation: sourceLocation)
 }
 
-// MARK: Machine
+// MARK: Machines
+
+/// Both machines on the same defaults, as the app wires them.
+@MainActor
+private struct Switches {
+    let defaults: UserDefaults
+    let assistant: FakeAssistantCheck
+    let status: AssistantStatusController
+    let refinement: TranscriptRefinementController
+
+    init(refinementStored: Bool = false, summaryStored: Bool = false, assistant: FakeAssistantCheck = FakeAssistantCheck()) {
+        let defaults = makeDefaults()
+        defaults.set(refinementStored, forKey: SettingsKey.transcriptRefinement)
+        defaults.set(summaryStored, forKey: SettingsKey.callSummaries)
+        self.defaults = defaults
+        self.assistant = assistant
+        status = AssistantStatusController(defaults: defaults, assistant: assistant)
+        refinement = TranscriptRefinementController(defaults: defaults, assistantStatus: status)
+    }
+}
 
 @Suite("TranscriptRefinement machine", .serialized)
 @MainActor
 struct TranscriptRefinementMachineTests {
-    @Test("refinement is off by default and no omp is looked for")
-    func offByDefault() async {
-        let assistant = FakeAssistantCheck()
-        let controller = TranscriptRefinementController(defaults: makeDefaults(), assistant: assistant)
-        #expect(controller.state == .off)
-        #expect(controller.isOn == false)
-        controller.appLaunched()
-        controller.openSettings()
-        await controller.waitUntilIdle()
-        #expect(controller.state == .off)
-        #expect(assistant.callCount == 0)
+    @Test("refinement is off by default")
+    func offByDefault() {
+        let switches = Switches()
+        #expect(switches.refinement.state == .off)
+        #expect(switches.refinement.isOn == false)
     }
 
-    @Test("turning on enters Checking, then Assistant ready when omp is reached")
-    func turnOnReached() async {
-        let assistant = FakeAssistantCheck()
-        assistant.hold()
-        let defaults = makeDefaults()
-        let controller = TranscriptRefinementController(defaults: defaults, assistant: assistant)
-        controller.turnOn()
-        #expect(controller.state == .checking)
-        #expect(controller.isOn)
-        #expect(defaults.bool(forKey: SettingsKey.transcriptRefinement))
-        assistant.release()
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantReady)
+    @Test("turning on goes to On and is stored")
+    func turnOn() async {
+        let switches = Switches()
+        switches.refinement.turnOn()
+        #expect(switches.refinement.state == .on)
+        #expect(switches.refinement.isOn)
+        #expect(switches.defaults.bool(forKey: SettingsKey.transcriptRefinement))
+        await switches.status.waitUntilIdle()
     }
 
-    @Test("an assistant that is not reached goes to Assistant missing")
-    func turnOnUnreachable() async {
-        let assistant = FakeAssistantCheck()
-        assistant.setReached(false)
-        let controller = TranscriptRefinementController(defaults: makeDefaults(), assistant: assistant)
-        controller.turnOn()
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantMissing)
-        #expect(controller.isOn)
-    }
-
-    @Test("turning off goes to Off, is stored and ignores the check in progress")
+    @Test("turning off goes to Off, is stored and signals the call machine")
     func turnOff() async {
-        let assistant = FakeAssistantCheck()
-        assistant.hold()
-        let defaults = makeDefaults()
-        let controller = TranscriptRefinementController(defaults: defaults, assistant: assistant)
-        controller.turnOn()
-        controller.turnOff()
-        #expect(controller.state == .off)
-        #expect(defaults.bool(forKey: SettingsKey.transcriptRefinement) == false)
-        assistant.release()
-        await waitUntil { assistant.completedCount == 1 }
-        #expect(controller.state == .off)
+        let switches = Switches(refinementStored: true)
+        let events = switches.refinement.turnOffEvents
+        switches.refinement.turnOff()
+        #expect(switches.refinement.state == .off)
+        #expect(switches.defaults.bool(forKey: SettingsKey.transcriptRefinement) == false)
+        var iterator = events.makeAsyncIterator()
+        #expect(await iterator.next() != nil)
     }
 
-    @Test("opening the settings and launching the app look for omp again while on")
-    func lookForAssistantAgain() async {
-        let assistant = FakeAssistantCheck()
-        assistant.setReached(false)
-        let controller = TranscriptRefinementController(defaults: makeDefaults(), assistant: assistant)
-        controller.turnOn()
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantMissing)
-
-        assistant.setReached(true)
-        controller.openSettings()
-        #expect(controller.state == .checking)
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantReady)
-
-        assistant.setReached(false)
-        controller.appLaunched()
-        #expect(controller.state == .checking)
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantMissing)
-        #expect(assistant.callCount == 3)
-    }
-
-    @Test("a stored switch is on at the next launch, which checks omp")
-    func storedSwitchIsRestored() async {
-        let defaults = makeDefaults()
-        defaults.set(true, forKey: SettingsKey.transcriptRefinement)
-        let assistant = FakeAssistantCheck()
-        let controller = TranscriptRefinementController(defaults: defaults, assistant: assistant)
-        #expect(controller.state == .checking)
-        controller.appLaunched()
-        await controller.waitUntilIdle()
-        #expect(controller.state == .assistantReady)
+    @Test("a stored switch is on at the next launch")
+    func storedSwitchIsRestored() {
+        #expect(Switches(refinementStored: true).refinement.state == .on)
     }
 
     @Test("turning on while already on does nothing")
     func turnOnTwice() async {
-        let assistant = FakeAssistantCheck()
-        let controller = TranscriptRefinementController(defaults: makeDefaults(), assistant: assistant)
-        controller.turnOn()
-        await controller.waitUntilIdle()
-        controller.turnOn()
-        #expect(controller.state == .assistantReady)
-        #expect(assistant.callCount == 1)
+        let switches = Switches()
+        switches.refinement.turnOn()
+        await switches.status.waitUntilIdle()
+        switches.refinement.turnOn()
+        #expect(switches.assistant.callCount == 1)
     }
 
-    @Test("the status of omp is shown only while refinement is on")
+    @Test("turning off while already off signals nothing")
+    func turnOffTwice() async {
+        let switches = Switches()
+        switches.refinement.turnOff()
+        #expect(switches.status.state == .notNeeded)
+        #expect(switches.defaults.bool(forKey: SettingsKey.transcriptRefinement) == false)
+    }
+}
+
+@Suite("AssistantStatus machine", .serialized)
+@MainActor
+struct AssistantStatusMachineTests {
+    @Test("both switches off: Not needed, and no omp is looked for")
+    func notNeededByDefault() async {
+        let switches = Switches()
+        #expect(switches.status.state == .notNeeded)
+        #expect(switches.status.isNeeded == false)
+        switches.status.appLaunched()
+        switches.status.openSettings()
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .notNeeded)
+        #expect(switches.assistant.callCount == 0)
+    }
+
+    @Test("turning refinement on enters Checking, then Assistant ready when omp is reached")
+    func refinementOnReached() async {
+        let assistant = FakeAssistantCheck()
+        assistant.hold()
+        let switches = Switches(assistant: assistant)
+        switches.refinement.turnOn()
+        #expect(switches.status.state == .checking)
+        assistant.release()
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .assistantReady)
+    }
+
+    @Test("turning summaries on enters Checking, then Assistant missing when omp is not reached")
+    func summaryOnUnreachable() async {
+        let assistant = FakeAssistantCheck()
+        assistant.setReached(false)
+        let switches = Switches(assistant: assistant)
+        switches.status.summaryTurnedOn()
+        #expect(switches.status.state == .checking)
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .assistantMissing)
+        #expect(switches.status.isNeeded)
+    }
+
+    @Test("a switch turned on while the other is on does not look for omp again")
+    func secondSwitchOn() async {
+        let switches = Switches()
+        switches.refinement.turnOn()
+        await switches.status.waitUntilIdle()
+        switches.status.summaryTurnedOn()
+        #expect(switches.status.state == .assistantReady)
+        #expect(switches.assistant.callCount == 1)
+    }
+
+    @Test("turning refinement off goes to Not needed when summaries are off, and ignores the check in progress")
+    func refinementOffSummaryOff() async {
+        let assistant = FakeAssistantCheck()
+        assistant.hold()
+        let switches = Switches(assistant: assistant)
+        switches.refinement.turnOn()
+        switches.refinement.turnOff()
+        #expect(switches.status.state == .notNeeded)
+        assistant.release()
+        await waitUntil { assistant.completedCount == 1 }
+        #expect(switches.status.state == .notNeeded)
+    }
+
+    @Test("turning refinement off stays Needed when summaries are on")
+    func refinementOffSummaryOn() async {
+        let switches = Switches(refinementStored: true, summaryStored: true)
+        switches.status.openSettings()
+        await switches.status.waitUntilIdle()
+        switches.refinement.turnOff()
+        #expect(switches.status.state == .assistantReady)
+        #expect(switches.status.isNeeded)
+    }
+
+    @Test("turning summaries off goes to Not needed only when refinement is off")
+    func summaryOff() async {
+        let switches = Switches(refinementStored: true, summaryStored: true)
+        switches.status.openSettings()
+        await switches.status.waitUntilIdle()
+        switches.status.summaryTurnedOff()
+        #expect(switches.status.state == .assistantReady)
+        switches.refinement.turnOff()
+        #expect(switches.status.state == .notNeeded)
+
+        let summaryOnly = Switches(summaryStored: true)
+        summaryOnly.status.openSettings()
+        await summaryOnly.status.waitUntilIdle()
+        summaryOnly.status.summaryTurnedOff()
+        #expect(summaryOnly.status.state == .notNeeded)
+    }
+
+    @Test("opening the settings and launching the app look for omp again while Needed")
+    func lookForAssistantAgain() async {
+        let assistant = FakeAssistantCheck()
+        assistant.setReached(false)
+        let switches = Switches(assistant: assistant)
+        switches.refinement.turnOn()
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .assistantMissing)
+
+        assistant.setReached(true)
+        switches.status.openSettings()
+        #expect(switches.status.state == .checking)
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .assistantReady)
+
+        assistant.setReached(false)
+        switches.status.appLaunched()
+        #expect(switches.status.state == .checking)
+        await switches.status.waitUntilIdle()
+        #expect(switches.status.state == .assistantMissing)
+        #expect(assistant.callCount == 3)
+    }
+
+    @Test("a stored switch, refinement or summaries, is Needed at the next launch, which checks omp")
+    func storedSwitchIsRestored() async {
+        for switches in [Switches(refinementStored: true), Switches(summaryStored: true)] {
+            #expect(switches.status.state == .checking)
+            switches.status.appLaunched()
+            await switches.status.waitUntilIdle()
+            #expect(switches.status.state == .assistantReady)
+        }
+    }
+
+    @Test("the status of omp is shown only while Needed")
     func assistantStatusTexts() {
-        #expect(SettingsView.assistantText(.off) == nil)
+        #expect(SettingsView.assistantText(.notNeeded) == nil)
         #expect(SettingsView.assistantText(.checking) == "Verifica in corso…")
         #expect(SettingsView.assistantText(.assistantReady) == "omp pronto")
         #expect(SettingsView.assistantText(.assistantMissing) == "omp non trovato")

@@ -17,7 +17,7 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - The app is not sandboxed and is signed ad-hoc (local builds may use the developer's personal team instead); no notarization.
 - Info.plist declares `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription` with Italian texts explaining that call audio stays on the Mac.
 - Swift Package Manager is the only dependency manager; the only third-party dependencies are FluidAudio and WebRTC's audio processing module (used only for its echo canceller, AEC3).
-- No cloud service, account or telemetry of the app's own; transcript refinement goes through the omp the user installed and configured, which reaches the model provider configured in omp.
+- No cloud service, account or telemetry of the app's own; transcript refinement and call summaries go through the omp the user installed and configured, which reaches the model provider configured in omp.
 - Distribution is limited to the developer's Macs and a few trusted people, who are read-only collaborators of the private GitHub repository and download the app from its GitHub Releases; no public distribution.
 - A GitHub Actions release workflow, separate from the CI workflow, runs on every tag `vX.Y.Z`: it runs the test plan as CI does and publishes only if the tests pass, then builds the Release configuration, ad-hoc signed, without notarization. Before packaging, it checks that the built app's executable contains the arm64 architecture alone, and stops without publishing otherwise.
 - A `vX.Y.Z` tag, once pushed, is never moved, deleted or recreated, even when its release workflow failed and no Release was published: the fix is released with the next patch version (for example `v1.2.1` after a failed `v1.2.0`).
@@ -25,7 +25,7 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - The app is packaged as a plain DMG created with `hdiutil`, holding `LARP.app` and a link to `/Applications`, with no background image or custom layout, named `LARP-<version>.dmg` and attached to a GitHub Release named after the tag.
 - The Release text is in Italian: it explains how to install the app (drag `LARP.app` to Applicazioni), how to open an app that is not notarized (`xattr -dr com.apple.quarantine /Applications/LARP.app`, or "Apri comunque" in Impostazioni di Sistema → Privacy e sicurezza), and that macOS asks again for the microphone and system audio permissions after every update; GitHub's generated release notes follow it.
 - Updates are manual: the user downloads and installs the DMG of the new version; the app never checks for updates and contacts no update service.
-- The README documents in English how to publish a release (push a `vX.Y.Z` tag), how to install and open the downloaded app, and that transcript refinement needs omp installed and configured by the user and sends the transcript text, never the audio, through it.
+- The README documents in English how to publish a release (push a `vX.Y.Z` tag), how to install and open the downloaded app, and that transcript refinement and call summaries need omp installed and configured by the user and send the transcript text, never the audio, through it.
 
 ## recorder
 
@@ -38,10 +38,22 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - Echo removal happens during the recording, before the microphone audio is written to `mic.caf` and fed to live transcription, so the stored microphone track and the "Me" transcript only ever see the cleaned audio. It runs on its own serial queue fed by the two taps, never on a Core Audio I/O thread, and never blocks capture.
 - When the echo canceller cannot be created or started at the start of a recording that captures the system audio, the microphone is captured and stored without echo removal and the recording starts anyway; the user is told as `requirements/ui#recorder/Recording` says.
 - `macos.AUDIO_DEVICES_CHANGED` is the engine's `AVAudioEngineConfigurationChange` notification during a recording; the engine is restarted (still without voice processing) and the echo canceller is reset so it adapts to the new microphone or output; when the echo canceller cannot be started again the microphone is captured without echo removal and, when the system audio is captured, the user is told again.
+- At every start and restart of the microphone the engine is reset (or a new engine is created) before the input node's format is read, so the tap and the conversion to 16 kHz always use the sample rate the microphone really delivers; every buffer is converted from the format it was captured with, never from a format read at an earlier start.
 - When restarting the engine after `macos.AUDIO_DEVICES_CHANGED` fails, the error is never ignored: the recorder goes to `recorder/Microphone lost` and the system audio capture goes on. While the microphone is lost, a change of the Mac's default input device or of the connected audio devices also counts as `macos.AUDIO_DEVICES_CHANGED`, and each one tries to start the microphone again, still without voice processing; when it starts, the echo canceller is reset and echo removal resumes as at the start of a recording.
 - The system audio is captured with a Core Audio process tap (`CATapDescription` for all processes except LARP itself, `AudioHardwareCreateProcessTap`, aggregate device), which needs only the system audio recording permission, not screen recording.
 - Permissions are checked before every start: microphone with `AVAudioApplication`/`AVCaptureDevice` authorization (asking with the macOS prompt when not yet decided), system audio by the tap creation result.
 - At a start by hand from Idle, a missing system audio permission or a system audio tap or aggregate device that fails to start does not stop the recording: only the microphone is captured. When accepting a proposal, both are still required.
+
+## system-audio
+
+- For the system audio, `macos.AUDIO_DEVICES_CHANGED` is any of: a change of the Mac's default output device (`kAudioHardwarePropertyDefaultOutputDevice`), a change of the nominal sample rate of the aggregate device or of its output sub-device (`kAudioDevicePropertyNominalSampleRate`), a change of the tap's format (`kAudioTapPropertyFormat`), or the output sub-device of the aggregate device disappearing. They are observed with Core Audio property listeners, never by polling, and handled off the Core Audio I/O thread.
+- On each of them the I/O proc is stopped, the aggregate device is rebuilt on the current default output device, the tap's format is read again and the capture is started again; every buffer is labelled with the format in effect when it was captured, never with a format read at an earlier start, and the conversion to 16 kHz mono is rebuilt whenever that format changes.
+- When the capture cannot be started again, the system audio track is filled with silence up to the recording's elapsed time, as for the microphone, and the echo canceller receives no reference: the microphone is stored as captured and no echo cancellation warning is shown. While `system-audio/Lost`, every `macos.AUDIO_DEVICES_CHANGED` tries to start the capture again; when it starts, the echo canceller is reset and echo removal resumes as at the start of a recording.
+
+## playback
+
+- The playback engine observes `AVAudioEngineConfigurationChange`, which is `macos.AUDIO_DEVICES_CHANGED` for playback: the engine is stopped, every player node is connected again to the main mixer with its file's processing format, and the engine starts again with the current output format; while Playing, the audio is scheduled again from the position reached before the change.
+- When the engine cannot start again, playback goes to `playback/Paused` at the position reached; the next play starts the engine on the output current at that moment.
 
 ## call
 
@@ -55,27 +67,10 @@ A section titled with a Model reference (such as `order/Paid`) applies to that e
 - Each "Others" line goes to the participant whose diarization segments overlap it most in time; a line without any overlap goes to the participant of the nearest segment.
 - FluidAudio models are downloaded on first use into the app's Application Support folder and reused afterwards.
 
-## call/Refining transcript
-
-- Refinement runs off the main actor and never blocks the interface or a recording.
-- Each refinement starts its own `omp acp` process as described in `transcript-refinement`, opens one session with `session/new` and sends one `session/prompt`: fixed instructions saying what the assistant may correct, followed by the lines as JSON (`number`, `speaker`, `start`, `end`, `text`).
-- The instructions ask for an answer made only of JSON, one object per line with `number`, `text` and `speaker`; the text of the answer is gathered from the `session/update` messages until the prompt ends.
-- The 10-minute limit counts from the start of the process; when it passes, the process is terminated and the refinement fails.
-- Turning refinement off or deleting the call terminates the running process at once.
-- A valid answer is applied to every line in a single save, keeping the original text and speaker of every line; nothing is saved from an answer that is not valid.
-
 ## transcription-language
 
 - Installation of the speech model uses `AssetInventory` (`assetInstallationRequest(supporting:)` for the `SpeechTranscriber` of the chosen locale); whether a locale is installed comes from `SpeechTranscriber.installedLocales`.
 - Supported choices map to the locales `it-IT` (Italian) and `en-US` (English).
-
-## transcript-refinement
-
-- omp is looked up at every check and every refinement through the user's login shell (`$SHELL -l -c 'command -v omp'`), because apps opened from the Finder do not get the shell's `PATH`.
-- omp is started with `Foundation.Process` as `omp acp`, with built-in tools disabled and no saved session when omp accepts the options (`--no-tools`, `--no-session`), in a new empty temporary folder used as working directory and deleted afterwards.
-- The Agent Client Protocol (JSON-RPC 2.0, one message per line on standard input and output) is spoken directly by the app, without a new package dependency.
-- The app declares no file system and no terminal capability in `initialize`, refuses every `session/request_permission`, uses the credentials already configured in omp and never chooses a model: omp uses its default model.
-- The check starts omp, sends `initialize` and ends the process: an answer within 10 seconds means the assistant is reached; no omp found, an error or no answer in time means it is unreachable.
 
 ## settings
 

@@ -34,6 +34,53 @@ struct RefinementLine: Equatable, Sendable {
     let start: TimeInterval
     let end: TimeInterval
     let text: String
+
+    /// The original lines of `call` in order of start time, numbered from 1: a call
+    /// refined before gives its original text and speakers, never the refined ones.
+    /// Shared by refinement and summary. `nil` when a line has no participant to send
+    /// (after the separation every line of the others has one), so that nothing but
+    /// "Io" and "Partecipante <numero>" is sent.
+    static func originalLines(of call: Call) -> [RefinementLine]? {
+        var lines: [RefinementLine] = []
+        for (index, line) in call.sortedLines.enumerated() {
+            guard let speaker = line.originalSpeaker else { return nil }
+            lines.append(
+                RefinementLine(
+                    number: index + 1,
+                    speaker: speaker,
+                    start: line.start,
+                    end: line.end,
+                    text: line.originalText ?? line.text))
+        }
+        return lines
+    }
+
+    /// `lines` as a JSON array, one object per line (`number`, `speaker`, `start`, `end`, `text`).
+    static func json(_ lines: [RefinementLine]) -> String {
+        let rows = lines.map { line -> String in
+            let fields: [(String, String)] = [
+                ("number", String(line.number)),
+                ("speaker", json(line.speaker.label)),
+                ("start", json(line.start)),
+                ("end", json(line.end)),
+                ("text", json(line.text)),
+            ]
+            return "  {" + fields.map { "\"\($0.0)\": \($0.1)" }.joined(separator: ", ") + "}"
+        }
+        return "[\n" + rows.joined(separator: ",\n") + "\n]"
+    }
+
+    private static func json(_ string: String) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        return String(decoding: (try? encoder.encode(string)) ?? Data("\"\"".utf8), as: UTF8.self)
+    }
+
+    /// Seconds with at most two decimals.
+    private static func json(_ seconds: TimeInterval) -> String {
+        let rounded = (seconds * 100).rounded() / 100
+        return rounded == rounded.rounded() ? String(Int(rounded)) : String(rounded)
+    }
 }
 
 /// One correction of the answer, already valid for its line.
@@ -55,20 +102,9 @@ struct RefinementRequest: Equatable, Sendable {
 
     /// The original lines of `call`: a call refined before is sent with its original
     /// text and speakers, never with the refined ones. Nothing else of the call is read.
-    /// `nil` when a line has no participant to send (after the separation every line
-    /// of the others has one), so that nothing but "Io" and "Partecipante <numero>" is sent.
+    /// `nil` when a line has no participant to send.
     init?(call: Call) {
-        var lines: [RefinementLine] = []
-        for (index, line) in call.sortedLines.enumerated() {
-            guard let speaker = line.originalSpeaker else { return nil }
-            lines.append(
-                RefinementLine(
-                    number: index + 1,
-                    speaker: speaker,
-                    start: line.start,
-                    end: line.end,
-                    text: line.originalText ?? line.text))
-        }
+        guard let lines = RefinementLine.originalLines(of: call) else { return nil }
         self.lines = lines
     }
 
@@ -91,29 +127,7 @@ struct RefinementRequest: Equatable, Sendable {
 
     /// The instructions followed by the lines as JSON (`number`, `speaker`, `start`, `end`, `text`).
     var prompt: String {
-        let rows = lines.map { line -> String in
-            let fields: [(String, String)] = [
-                ("number", String(line.number)),
-                ("speaker", Self.json(line.speaker.label)),
-                ("start", Self.json(line.start)),
-                ("end", Self.json(line.end)),
-                ("text", Self.json(line.text)),
-            ]
-            return "  {" + fields.map { "\"\($0.0)\": \($0.1)" }.joined(separator: ", ") + "}"
-        }
-        return Self.instructions + "\n\n[\n" + rows.joined(separator: ",\n") + "\n]"
-    }
-
-    private static func json(_ string: String) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .withoutEscapingSlashes
-        return String(decoding: (try? encoder.encode(string)) ?? Data("\"\"".utf8), as: UTF8.self)
-    }
-
-    /// Seconds with at most two decimals.
-    private static func json(_ seconds: TimeInterval) -> String {
-        let rounded = (seconds * 100).rounded() / 100
-        return rounded == rounded.rounded() ? String(Int(rounded)) : String(rounded)
+        Self.instructions + "\n\n" + RefinementLine.json(lines)
     }
 
     // MARK: Answer

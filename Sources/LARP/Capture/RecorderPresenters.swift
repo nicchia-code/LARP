@@ -83,6 +83,14 @@ protocol MicrophoneLostPresenting: AnyObject {
     func hide()
 }
 
+/// Shows and hides the notice that the system audio is lost. Replaced in tests.
+@MainActor
+protocol SystemAudioLostPresenting: AnyObject {
+    /// Shows the notice; it stays until `hide()`.
+    func show()
+    func hide()
+}
+
 /// The proposal: a small panel under the menu bar icon that never takes the focus.
 @MainActor
 final class ProposalPanelController: ProposalPresenting {
@@ -172,19 +180,46 @@ final class MicrophoneLostPanelController: MicrophoneLostPresenting {
 
     func show() {
         hide()
-        panel = MenuBarPanel.show(NoticeView(symbol: "mic.slash", message: Self.message))
+        panel = MenuBarPanel.show(NoticeView(symbol: "mic.slash", message: Self.message), stacked: true)
     }
 
     func hide() {
-        panel?.orderOut(nil)
-        panel = nil
+        guard let panel else { return }
+        MenuBarPanel.close(panel)
+        self.panel = nil
+    }
+}
+
+/// The notice that the system audio is lost: a small panel under the menu bar icon that
+/// never takes the focus and stays until it is hidden. Stacked with the one of the
+/// microphone when both are lost.
+@MainActor
+final class SystemAudioLostPanelController: SystemAudioLostPresenting {
+    static let message = "Audio di sistema non disponibile: la registrazione prosegue senza gli altri partecipanti."
+
+    private var panel: NSPanel?
+
+    func show() {
+        hide()
+        panel = MenuBarPanel.show(NoticeView(symbol: "speaker.slash", message: Self.message), stacked: true)
+    }
+
+    func hide() {
+        guard let panel else { return }
+        MenuBarPanel.close(panel)
+        self.panel = nil
     }
 }
 
 /// Panels under the menu bar icon that never take the focus.
 @MainActor
 private enum MenuBarPanel {
-    static func show<Content: View>(_ content: Content) -> NSPanel {
+    /// The panels that stay until they are hidden, from the top: each one sits under the
+    /// previous one and moves up when one above it goes away.
+    private static var stack: [NSPanel] = []
+
+    /// With `stacked` the panel goes under the stacked panels that are already shown.
+    static func show<Content: View>(_ content: Content, stacked: Bool = false) -> NSPanel {
         let hosting = NSHostingView(rootView: content)
         let size = hosting.fittingSize
         let panel = NSPanel(
@@ -203,13 +238,32 @@ private enum MenuBarPanel {
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.setFrameOrigin(origin(for: size))
+        if stacked { stack.append(panel) }
+        layoutStack()
         panel.orderFrontRegardless()
         return panel
     }
 
+    /// Hides a panel and closes the gap it leaves in the stack.
+    static func close(_ panel: NSPanel) {
+        panel.orderOut(nil)
+        stack.removeAll { $0 === panel }
+        layoutStack()
+    }
+
+    private static func layoutStack() {
+        var top: CGFloat?
+        for panel in stack {
+            let size = panel.frame.size
+            let point = origin(for: size, below: top)
+            panel.setFrameOrigin(point)
+            top = point.y
+        }
+    }
+
     /// Centered under the menu bar icon (the status bar window of this app), or at
     /// the top right of the main screen if the icon cannot be found.
-    private static func origin(for size: NSSize) -> NSPoint {
+    private static func origin(for size: NSSize, below top: CGFloat? = nil) -> NSPoint {
         let gap: CGFloat = 6
         let statusFrame = NSApp.windows.first { $0.className.contains("StatusBar") }?.frame
         let screen = NSScreen.screens.first { screen in
@@ -218,7 +272,7 @@ private enum MenuBarPanel {
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let preferredX = statusFrame.map { $0.midX - size.width / 2 } ?? visible.maxX - size.width - 12
         let x = min(max(preferredX, visible.minX + 8), visible.maxX - size.width - 8)
-        let top = statusFrame.map { $0.minY } ?? visible.maxY
+        let top = top ?? statusFrame.map { $0.minY } ?? visible.maxY
         return NSPoint(x: x, y: top - size.height - gap)
     }
 }

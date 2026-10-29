@@ -5,7 +5,7 @@ description: Use when defining or changing what is stored for a call, its audio 
 
 ## General
 - Everything is stored on the Mac in `~/Library/Application Support/LARP/`: a SwiftData store and a `Recordings/<call id>/` folder per call.
-- Settings (transcription language, transcript refinement, launch at login) are stored in `UserDefaults`.
+- Settings (transcription language, transcript refinement, call summaries, launch at login) are stored in `UserDefaults`.
 
 ## call
 - A call holds: identifier, title (optional, set by the user), start date and time, end date and time, duration, call app name (absent for manual recordings), transcription language, current state, the two audio files, the participants and the transcript lines.
@@ -15,4 +15,5 @@ description: Use when defining or changing what is stored for a call, its audio 
 - A transcript line holds: speaker (Me, Others, or a participant), start time and end time relative to the start of the call, and text.
 - Once its call has been refined, a transcript line also holds its original text and original speaker, as transcription and separation left them; restoring the transcript puts them back as text and speaker and clears them. A call is refined when its lines hold an original.
 - A participant holds: number (1, 2, …) and an optional name set by the user; it belongs to one call only.
-- Deleting a call deletes its record, its lines, its participants and its `Recordings/<call id>/` folder.
+- A call holds at most one summary: its key concepts, decisions and next steps as ordered lists of texts, each next step with an optional owner ("Io" or "Partecipante <number>"), its free text, the language it is written in and when it was written. It also holds the state of its summary (none, being written, waiting to be tried again, written). Calls stored before summaries existed have no summary.
+- Deleting a call deletes its record, its lines, its participants, its summary and its `Recordings/<call id>/` folder.

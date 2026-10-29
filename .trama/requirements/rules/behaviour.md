@@ -22,12 +22,28 @@ description: Use when implementing call detection, transcript assembly, names an
 - The answer is applied only when it has exactly one correction for every line sent, each with non-empty text and a speaker the line is allowed to have; otherwise nothing is applied and the refinement fails.
 - A refinement that gets no complete answer within 10 minutes of starting fails.
 
+## call-summary
+- A summary sends, for every line of the call in order of start time: a line number, the original speaker as "Io" or "Partecipante <number>" (never a name given by the user), the start and end time and the original text. It never sends the audio, the title, the names given by the user, the dates or the call app.
+- A summary always starts from the original lines, as transcription and separation left them, whether the call has been refined or not; refining or restoring the transcript does not change the summary.
+- The instructions tell the assistant that the lines come from an automatic speech recognition and an automatic separation of voices, so words may be recognised wrongly and lines may be given to the wrong participant, and that it must make sense of them without reporting those mistakes.
+- The summary is written in the transcription language of the call: Italian for a call transcribed in Italian, English for one transcribed in English.
+- The summary holds: the key concepts discussed, the decisions taken, the next steps, and, as free text, what was said that matters and fits none of these three; each of the three lists may be empty and the free text may be empty.
+- A next step names who has to do it, as "Io" or "Partecipante <number>", only when the call makes it clear; otherwise it names nobody.
+- The assistant refers to the participants only as "Io" and "Partecipante <number>", never with names guessed from the conversation.
+- The answer is saved only when it is a complete summary and every owner of a next step is "Io" or "Partecipante <number>" of a participant of the call; otherwise nothing is saved and the summary fails.
+- A summary that gets no complete answer within 10 minutes of starting fails.
+- No summary is asked for a call whose transcript has no lines: such a call never goes to Summarising.
+- Wherever the summary is shown, searched or exported, every "Partecipante <number>" is replaced by the name the user gave that participant, when there is one; the stored summary keeps "Io" and "Partecipante <number>" as the assistant wrote them.
+- The section titles follow the language of the summary: "Concetti chiave", "Decisioni", "Prossimi passi", "Altro" in Italian; "Key concepts", "Decisions", "Next steps", "Other" in English. An empty list shows "Nessuno" in Italian and "None" in English; "Altro" / "Other" is left out when its text is empty.
+
 ## main-window
-- Search matches the text typed, ignoring case and accents, against the title, the transcript text and the participant names; an empty search shows every call.
+- Search matches the text typed, ignoring case and accents, against the title, the transcript text, the participant names and the text of the summary as it is shown; an empty search shows every call.
 - Search and Markdown export use the text and speakers the call shows: refined, or original after a restore.
 - Markdown export: an H1 with the call title, a line with date, time, duration and language, then one paragraph per line as `**<speaker>** [<mm:ss>]: <text>`; the default file name is the call title.
+- When the call has a summary, the export puts it between the date line and the lines: `## Sintesi`, then one `### <section title>` per section with its list as `- <text>` (a next step with who has to do it as `- <text> (<who>)`) and the free text as a paragraph, then `## Trascrizione` before the lines. Without a summary the file is as described above, with no `##` headings.
 
 ## settings
 - The default transcription language at first launch is Italian.
 - Transcript refinement is off by default.
+- Call summaries are off by default.
 - Launch at login is off by default.

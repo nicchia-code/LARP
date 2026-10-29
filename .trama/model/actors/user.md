@@ -25,6 +25,12 @@ The user turns on the refinement of transcripts in the settings.
 ### TURN_OFF_REFINEMENT
 The user turns off the refinement of transcripts in the settings.
 
+### TURN_ON_SUMMARY
+The user turns on the summaries of calls in the settings.
+
+### TURN_OFF_SUMMARY
+The user turns off the summaries of calls in the settings.
+
 ### OPEN_WINDOW
 The user opens the archive window.
 
@@ -48,6 +54,9 @@ The user asks to refine the transcript of the selected call.
 
 ### RESTORE_TRANSCRIPT
 The user brings the transcript of the selected call back to its original text and speakers.
+
+### SUMMARIZE_CALL
+The user asks the assistant to write the summary of the selected call, or to write it again.
 
 ### DELETE_CALL
 The user deletes a call after confirming.

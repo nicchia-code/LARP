@@ -1,6 +1,6 @@
 # LARP
 
-A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Audio always stays on the Mac, and the app has no cloud, account or telemetry of its own. The only optional exception is transcript refinement, which is off by default and sends the transcript text (never the audio) through omp, an optional external program that is not bundled with the app, to the model provider configured in omp. The interface is in Italian.
+A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Audio always stays on the Mac, and the app has no cloud service, account or telemetry of its own. The only optional exceptions are transcript refinement and call summaries, both off by default: they send the transcript text (never the audio) through omp, an optional external program that is not bundled with the app, to the model provider configured in omp. The interface is in Italian.
 
 Requirements: an Apple silicon Mac (M1 or later) with macOS 26 or later, and Xcode.
 
@@ -73,13 +73,15 @@ To install a version, download `LARP-<version>.dmg` from the Release, open it an
 
 Updates are manual: download the new version and replace `LARP.app`. The app does not check for updates and contacts no update service. After every update macOS asks again for the microphone and system audio permissions.
 
-## Transcript refinement with omp
+## Transcript refinement and call summaries with omp
 
-Audio always stays on the Mac. The app has no cloud, account or telemetry of its own.
+Audio always stays on the Mac. The app has no cloud service, account or telemetry of its own: refinement and summaries go through the user's omp, which reaches the model provider configured in omp.
 
-Transcript refinement is off by default. When it is on, the text of the transcript (never the audio) is sent through omp to the model provider configured in omp.
+Transcript refinement and call summaries both need omp installed and configured by the user, and found in the `PATH` of the user's login shell. Both send only the transcript text through omp, never the audio.
 
-Refinement needs omp installed and configured by the user, and found in the `PATH` of the user's login shell. In the settings, the "Rifinisci il testo con omp" switch turns refinement on and shows whether omp is ready.
+Transcript refinement is off by default. When it is on, the text of the transcript is sent through omp. In the settings, the "Rifinisci il testo con omp" switch turns refinement on and shows whether omp is ready.
+
+Call summaries are optional, off by default ("Sintesi con omp" in the settings) and independent of transcript refinement: either can be on without the other.
 
 ## Continuous integration
 
@@ -107,4 +109,4 @@ Data lives in `~/Library/Application Support/LARP/`: the SwiftData store (`LARP.
 
 Swift Package Manager only. The third-party dependencies are [FluidAudio](https://github.com/FluidInference/FluidAudio), pinned in `project.yml`, and WebRTC's audio processing module, used only for its echo canceller (AEC3), which removes the sound of the other participants from the microphone while the system audio is recorded. The module is built from source as a C++ package pinned to one WebRTC revision, in `Packages/WebRTCAudioProcessing` (see its `README.md`); it brings Abseil, which WebRTC needs.
 
-omp is not bundled with the app: it is an optional external program, needed only for transcript refinement (see above) and installed by the user.
+omp is not bundled with the app: it is an optional external program, needed only for transcript refinement and call summaries (see above) and installed by the user.
