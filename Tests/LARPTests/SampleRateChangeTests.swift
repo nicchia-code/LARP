@@ -45,7 +45,7 @@ struct SampleRateChangeTests {
         let capture = CallAudioCapture(
             // Without echo removal: the test checks the speed of the tracks, not the cleaned microphone.
             makeMicrophone: { pipeline, _, events in
-                MicrophoneCapture(pipeline: pipeline, events: events, makeEngine: { microphone.makeEngine() })
+                MicrophoneCapture(pipeline: pipeline, events: events, makeEngine: { _ in microphone.makeEngine() })
             },
             makeSystem: { pipeline, _, events in
                 SystemAudioTap(pipeline: pipeline, driver: output, events: events)
@@ -92,7 +92,7 @@ struct SampleRateChangeTests {
         let device = FakeMicrophoneDevice(tone: FakeTone(frequency: Self.microphoneFrequency, channels: 1), rate: 48_000)
         let recorder = TrackRecorder()
         let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: recorder)
-        let microphone = MicrophoneCapture(pipeline: pipeline, makeEngine: { device.makeEngine() })
+        let microphone = MicrophoneCapture(pipeline: pipeline, makeEngine: { _ in device.makeEngine() })
 
         try microphone.start()
         device.play(seconds: 2)
@@ -117,7 +117,7 @@ struct SampleRateChangeTests {
         let events = EventLog()
         let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil)
         let microphone = MicrophoneCapture(
-            pipeline: pipeline, events: { events.append($0) }, makeEngine: { device.makeEngine() })
+            pipeline: pipeline, events: { events.append($0) }, makeEngine: { _ in device.makeEngine() })
 
         try microphone.start()
         device.failToStart(true)

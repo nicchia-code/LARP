@@ -1,0 +1,3 @@
+# Settings
+
+The user's choices, made in the settings page of the main window, some of them also in the popover or in the welcome window shown at the first launch: whether calls are detected and which call apps are watched, whether detected calls are recorded on their own, the microphone to record, the transcription language and whether its speech model is installed, whether Microsoft Teams and the calendar give names to the participants, the switch for refining transcripts with omp, the switch for writing call summaries with omp, whether omp can be reached while one of those switches is on, the two global keyboard shortcuts, and whether the app starts at login. The access to Teams and to the calendar is also given here. Every choice is kept across launches.

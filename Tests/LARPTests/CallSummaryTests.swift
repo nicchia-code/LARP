@@ -18,14 +18,24 @@ private func addLines(to call: Call) {
 }
 
 private let validSummary = """
-    {"keyConcepts": ["Budget"], "decisions": ["Si parte a marzo"], \
-    "nextSteps": [{"text": "Inviare il piano", "owner": "Partecipante 1"}, {"text": "Chiamare il fornitore"}], \
-    "other": "Una nota"}
+    {"opening": "Si parte a marzo con il budget approvato.", "openingHighlight": "budget approvato", \
+    "keyConcepts": ["Budget"], "decisions": [{"text": "Si parte a marzo", "line": 2}], \
+    "actionItems": [{"text": "Inviare il piano", "owner": "Partecipante 1", "due": "venerdì"}, {"text": "Chiamare il fornitore"}], \
+    "openQuestions": ["Chi paga la sala?"], "other": "Una nota"}
     """
 
 private let otherSummary = """
-    {"keyConcepts": [], "decisions": [], "nextSteps": [], "other": ""}
+    {"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [], \
+    "openQuestions": [], "other": ""}
     """
+
+/// An answer with the seven fields, each given as JSON text.
+private func answer(
+    opening: String = "", highlight: String = "", concepts: String = "[]", decisions: String = "[]",
+    actions: String = "[]", open: String = "[]", other: String = ""
+) -> String {
+    #"{"opening": "\#(opening)", "openingHighlight": "\#(highlight)", "keyConcepts": \#(concepts), "decisions": \#(decisions), "actionItems": \#(actions), "openQuestions": \#(open), "other": "\#(other)"}"#
+}
 
 @Suite("call-summary machine")
 struct SummaryTransitionTests {
@@ -96,7 +106,7 @@ struct SummaryRequestTests {
         // Lines added out of order are still numbered by start time.
         call.lines.append(TranscriptLine(speakerKind: .me, start: 1, end: 2.25, text: "Una \"riga\" con / barra"))
 
-        let prompt = try #require(SummaryRequest(call: call)).prompt
+        let prompt = try #require(SummaryRequest(call: call, languageChoice: .sameAsCall)).prompt
 
         #expect(prompt.hasPrefix(SummaryRequest.instructions(language: "it-IT")))
         let json = try #require(prompt.range(of: "\n\n[\n").map { String(prompt[$0.lowerBound...]) })
@@ -112,7 +122,7 @@ struct SummaryRequestTests {
     @Test("never sends the title, the names given by the user, the dates or the app of the call")
     func sendsNothingElse() throws {
         let call = makeCall()
-        let prompt = try #require(SummaryRequest(call: call)).prompt
+        let prompt = try #require(SummaryRequest(call: call, languageChoice: .sameAsCall)).prompt
         for secret in ["Riunione segreta", "Anna", "Rossi", "Zoom", String(Calendar.current.component(.year, from: call.startedAt))] {
             #expect(!prompt.contains(secret), "\(secret)")
         }
@@ -124,17 +134,30 @@ struct SummaryRequestTests {
         for part in [
             "riconoscimento vocale automatico", "separazione automatica", "senza segnalare",
             "Io", "Partecipante <numero>", "senza indovinare nomi",
-            "keyConcepts", "decisions", "nextSteps", "owner", "other",
+            "al più 40 parole", "esito della call", "parte chiave", "poche parole consecutive",
+            "il number della riga", "venerdì", "mai come data calcolata", "rimasto aperto", "testo libero",
+            "opening", "openingHighlight", "keyConcepts", "decisions", "line", "actionItems", "owner", "due",
+            "openQuestions", "other",
         ] {
             #expect(text.contains(part), "\(part)")
         }
     }
 
-    @Test("the summary is asked in the transcription language of the call")
-    func language() {
+    @Test("the summary is asked in the language chosen: the call's own for \"Come la call\", else the one chosen")
+    func language() throws {
         #expect(SummaryRequest.instructions(language: "it-IT").contains("in italiano"))
         #expect(SummaryRequest.instructions(language: "en-US").contains("in inglese"))
-        #expect(SummaryRequest(call: makeCall(language: "en-US"))?.language == "en-US")
+        func asked(_ choice: SummaryLanguageChoice, callIn language: String) -> String? {
+            SummaryRequest(call: makeCall(language: language), languageChoice: choice)?.language
+        }
+        #expect(asked(.sameAsCall, callIn: "it-IT") == "it-IT")
+        #expect(asked(.sameAsCall, callIn: "en-US") == "en-US")
+        #expect(asked(.sameAsCall, callIn: "de-DE") == "it-IT")
+        #expect(asked(.italian, callIn: "en-US") == "it-IT")
+        #expect(asked(.english, callIn: "it-IT") == "en-US")
+        #expect(asked(.english, callIn: "en-US") == "en-US")
+        let prompt = try #require(SummaryRequest(call: makeCall(language: "it-IT"), languageChoice: .english)).prompt
+        #expect(prompt.contains("in inglese"))
     }
 
     @Test("a refined call is sent with its original text and speakers")
@@ -147,7 +170,7 @@ struct SummaryRequestTests {
         lines[1].text = "Corretto"
         lines[1].participant = call.participants.first { $0.number == 1 }
 
-        let request = try #require(SummaryRequest(call: call))
+        let request = try #require(SummaryRequest(call: call, languageChoice: .sameAsCall))
 
         #expect(request.lines[1].speaker == .participant(2))
         #expect(request.lines[1].text == "Il meeting e' alle tre")
@@ -159,25 +182,88 @@ struct SummaryRequestTests {
         call.sortedLines[1].speakerKind = .others
         call.sortedLines[1].participant = nil
 
-        #expect(SummaryRequest(call: call) == nil)
+        #expect(SummaryRequest(call: call, languageChoice: .sameAsCall) == nil)
     }
 
     @Test("a complete answer is a summary, also inside a code block")
-    func validAnswers() {
-        let summary = SummaryRequest.summary(from: "```json\n" + validSummary + "\n```", participants: [1, 2])
+    func validAnswers() throws {
+        let lines = try #require(SummaryRequest(call: makeCall(), languageChoice: .sameAsCall)).lines
+        let summary = SummaryRequest.summary(
+            from: "```json\n" + validSummary + "\n```", participants: [1, 2], lines: lines)
+        #expect(summary?.opening == "Si parte a marzo con il budget approvato.")
+        #expect(summary?.openingHighlight == "budget approvato")
         #expect(summary?.keyConcepts == ["Budget"])
-        #expect(summary?.decisions == ["Si parte a marzo"])
+        #expect(summary?.decisions == [SummaryDecision(text: "Si parte a marzo", lineStart: 2.5)])
         #expect(
-            summary?.nextSteps == [
-                SummaryNextStep(text: "Inviare il piano", owner: "Partecipante 1"),
-                SummaryNextStep(text: "Chiamare il fornitore"),
+            summary?.actionItems == [
+                SummaryActionItem(text: "Inviare il piano", owner: "Partecipante 1", due: "venerdì"),
+                SummaryActionItem(text: "Chiamare il fornitore"),
             ])
+        #expect(summary?.openQuestions == ["Chi paga la sala?"])
         #expect(summary?.text == "Una nota")
-        #expect(SummaryRequest.summary(from: otherSummary, participants: [])?.nextSteps == [])
+        #expect(SummaryRequest.summary(from: otherSummary, participants: [], lines: [])?.actionItems == [])
         #expect(
             SummaryRequest.summary(
-                from: #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"text": "Io lo faccio", "owner": "Io"}], "other": ""}"#,
-                participants: [])?.nextSteps == [SummaryNextStep(text: "Io lo faccio", owner: "Io")])
+                from: answer(actions: #"[{"text": "Io lo faccio", "owner": "Io"}]"#), participants: [], lines: [])?
+                .actionItems == [SummaryActionItem(text: "Io lo faccio", owner: "Io")])
+    }
+
+    @Test("every text is trimmed and empty ones are dropped; an empty due counts as none; an empty opening is allowed")
+    func trimming() {
+        let text = answer(
+            opening: "  ",
+            concepts: #"["  Budget ", "", "   "]"#,
+            decisions: #"[{"text": "  "}, {"text": " Parte "}]"#,
+            actions: #"[{"text": ""}, {"text": " Scrivere ", "due": "  "}, {"text": "Fare", "owner": "Io", "due": " lunedì "}]"#,
+            open: #"[" Costi ", ""]"#,
+            other: "  Resto \\n")
+        let summary = SummaryRequest.summary(from: text, participants: [], lines: [])
+        #expect(summary?.opening == "")
+        #expect(summary?.openingHighlight == "")
+        #expect(summary?.keyConcepts == ["Budget"])
+        #expect(summary?.decisions == [SummaryDecision(text: "Parte")])
+        #expect(
+            summary?.actionItems == [
+                SummaryActionItem(text: "Scrivere"),
+                SummaryActionItem(text: "Fare", owner: "Io", due: "lunedì"),
+            ])
+        #expect(summary?.openQuestions == ["Costi"])
+        #expect(summary?.text == "Resto")
+    }
+
+    @Test("the line of a decision is kept only when it is the number of a line sent")
+    func decisionLines() {
+        let lines = [
+            RefinementLine(number: 1, speaker: .me, start: 0, end: 2, text: "A"),
+            RefinementLine(number: 2, speaker: .me, start: 2.5, end: 4, text: "B"),
+        ]
+        let text = answer(
+            decisions:
+                #"[{"text": "Uno", "line": 1}, {"text": "Due", "line": 2}, {"text": "Tre", "line": 3}, {"text": "Zero", "line": 0}, {"text": "Testo", "line": "2"}, {"text": "Nulla", "line": null}, {"text": "Manca"}]"#
+        )
+        #expect(
+            SummaryRequest.summary(from: text, participants: [], lines: lines)?.decisions == [
+                SummaryDecision(text: "Uno", lineStart: 0),
+                SummaryDecision(text: "Due", lineStart: 2.5),
+                SummaryDecision(text: "Tre"),
+                SummaryDecision(text: "Zero"),
+                SummaryDecision(text: "Testo"),
+                SummaryDecision(text: "Nulla"),
+                SummaryDecision(text: "Manca"),
+            ])
+    }
+
+    @Test("the highlight is kept only when it appears as it is inside the opening, ignoring case")
+    func highlight() {
+        func highlight(_ opening: String, _ part: String) -> String? {
+            SummaryRequest.summary(
+                from: answer(opening: opening, highlight: part), participants: [], lines: [])?.openingHighlight
+        }
+        #expect(highlight("Il budget approvato basta.", "budget approvato") == "budget approvato")
+        #expect(highlight("Il Budget Approvato basta.", "budget approvato") == "budget approvato")
+        #expect(highlight("Il budget è approvato.", "budget approvato") == "")
+        #expect(highlight("Il budget approvato basta.", "") == "")
+        #expect(highlight("", "budget") == "")
     }
 
     @Test(
@@ -187,22 +273,31 @@ struct SummaryRequestTests {
             "{}",
             "[]",
             // a field missing
-            #"{"keyConcepts": [], "decisions": [], "nextSteps": []}"#,
-            #"{"keyConcepts": [], "decisions": [], "other": ""}"#,
+            #"{"openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "keyConcepts": [], "decisions": [], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "decisions": [], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [], "openQuestions": []}"#,
+            // the old summary, without the new fields
+            #"{"keyConcepts": [], "decisions": [], "nextSteps": [], "other": ""}"#,
             // a field of the wrong type
-            #"{"keyConcepts": "Budget", "decisions": [], "nextSteps": [], "other": ""}"#,
-            #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"owner": "Io"}], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": "Budget", "decisions": [], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": ["Testo"], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [{"line": 1}], "actionItems": [], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [{"owner": "Io"}], "openQuestions": [], "other": ""}"#,
             // an owner who is not in the call, a name, or something else than a participant
-            #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"text": "A", "owner": "Partecipante 3"}], "other": ""}"#,
-            #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"text": "A", "owner": "Anna"}], "other": ""}"#,
-            #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"text": "A", "owner": "Altri"}], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [{"text": "A", "owner": "Partecipante 3"}], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [{"text": "A", "owner": "Anna"}], "openQuestions": [], "other": ""}"#,
+            #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [{"text": "A", "owner": "Altri"}], "openQuestions": [], "other": ""}"#,
         ])
     func invalidAnswers(text: String) {
-        #expect(SummaryRequest.summary(from: text, participants: [1, 2]) == nil)
+        #expect(SummaryRequest.summary(from: text, participants: [1, 2], lines: []) == nil)
     }
 }
 
-@Suite("call summary", .serialized)
+@Suite("call summary", .serialized, .italianInterface)
 @MainActor
 struct CallSummaryTests {
     private func summarisableCall(_ harness: CallHarness, _ state: CallState = .ready) throws -> Call {
@@ -229,9 +324,14 @@ struct CallSummaryTests {
         #expect(call.state == .ready)
         #expect(summarizer.prompts.count == 1)
         let summary = try #require(call.summary)
+        #expect(summary.opening == "Si parte a marzo con il budget approvato.")
+        #expect(summary.openingHighlight == "budget approvato")
         #expect(summary.keyConcepts == ["Budget"])
-        #expect(summary.decisions == ["Si parte a marzo"])
-        #expect(summary.nextSteps.map(\.owner) == ["Partecipante 1", nil])
+        #expect(summary.decisionItems == [SummaryDecision(text: "Si parte a marzo", lineStart: 2.5)])
+        #expect(summary.actionItems.map(\.owner) == ["Partecipante 1", nil])
+        #expect(summary.actionItems.map(\.due) == ["venerdì", nil])
+        #expect(summary.actionItems.map(\.isDone) == [false, false])
+        #expect(summary.openQuestions == ["Chi paga la sala?"])
         #expect(summary.text == "Una nota")
         #expect(summary.language == "it-IT")
         #expect(try summaries(harness).count == 1)
@@ -336,7 +436,7 @@ struct CallSummaryTests {
 
     @Test(
         "an answer that is not valid saves nothing and the call awaits a retry",
-        arguments: ["niente JSON", "{}", #"{"keyConcepts": [], "decisions": [], "nextSteps": [{"text": "A", "owner": "Partecipante 7"}], "other": ""}"#])
+        arguments: ["niente JSON", "{}", #"{"opening": "", "openingHighlight": "", "keyConcepts": [], "decisions": [], "actionItems": [{"text": "A", "owner": "Partecipante 7"}], "openQuestions": [], "other": ""}"#])
     func invalidAnswerFails(text: String) async throws {
         let harness = try CallHarness(summarizer: FakeSummarizer(.answer(text)), summariesOn: true)
         defer { harness.cleanUp() }

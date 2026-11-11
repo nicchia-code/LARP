@@ -19,6 +19,7 @@ final class EchoRemover: @unchecked Sendable {
     private static let frameSamples = EchoCanceller.frameSamples
 
     private let output: TrackPipeline
+    private let referenceDrops: BufferDrops
     private let queue = DispatchQueue(label: "com.larp.LARP.echo", qos: .userInitiated)
     /// Whether an echo canceller exists, readable from the audio threads.
     private let isActive = Mutex(false)
@@ -32,9 +33,12 @@ final class EchoRemover: @unchecked Sendable {
     private var referenceSamples: [Float] = []
     private var microphoneSamples: [Float] = []
 
-    /// `output` is the microphone's track: it gets the cleaned audio.
-    init(output: TrackPipeline) {
+    /// `output` is the microphone's track: it gets the cleaned audio, and the microphone
+    /// buffers dropped here are counted in its `drops`. `referenceDrops` counts the system
+    /// audio buffers dropped here.
+    init(output: TrackPipeline, referenceDrops: BufferDrops = BufferDrops()) {
         self.output = output
+        self.referenceDrops = referenceDrops
     }
 
     /// What the system audio tap hands its audio to.
@@ -100,7 +104,11 @@ final class EchoRemover: @unchecked Sendable {
     // MARK: - Audio threads
 
     fileprivate func ingestReference(_ buffer: AVAudioPCMBuffer) {
-        guard isActive.withLock({ $0 }), let copy = buffer.copy() else { return }
+        guard isActive.withLock({ $0 }) else { return }
+        guard let copy = buffer.copy() else {
+            referenceDrops.record(.unreadable)
+            return
+        }
         let chunk = AudioChunk(buffer: copy)
         queue.async { [self] in
             processReference(chunk.buffer)
@@ -112,7 +120,10 @@ final class EchoRemover: @unchecked Sendable {
             output.ingest(borrowing: buffer, arrival: arrival)
             return
         }
-        guard let copy = buffer.copy() else { return }
+        guard let copy = buffer.copy() else {
+            output.drops.record(.unreadable)
+            return
+        }
         let chunk = AudioChunk(buffer: copy)
         queue.async { [self] in
             processMicrophone(chunk.buffer, arrival: arrival)
@@ -122,7 +133,11 @@ final class EchoRemover: @unchecked Sendable {
     // MARK: - On the queue
 
     private func processReference(_ buffer: AVAudioPCMBuffer) {
-        guard let canceller, let converted = try? referenceConverter.convert(buffer) else { return }
+        guard let canceller else { return }
+        guard let converted = try? referenceConverter.convert(buffer) else {
+            referenceDrops.record(.conversionFailed)
+            return
+        }
         append(converted, to: &referenceSamples)
         var consumed = 0
         referenceSamples.withUnsafeBufferPointer { samples in
@@ -139,7 +154,10 @@ final class EchoRemover: @unchecked Sendable {
             output.enqueue(buffer, arrival: arrival)
             return
         }
-        guard let converted = try? microphoneConverter.convert(buffer) else { return }
+        guard let converted = try? microphoneConverter.convert(buffer) else {
+            output.drops.record(.conversionFailed)
+            return
+        }
         append(converted, to: &microphoneSamples)
         let frames = microphoneSamples.count / Self.frameSamples
         guard frames > 0 else { return }
@@ -147,7 +165,10 @@ final class EchoRemover: @unchecked Sendable {
         let count = frames * Self.frameSamples
         guard let cleaned = AVAudioPCMBuffer(pcmFormat: AudioFormats.storage, frameCapacity: AVAudioFrameCount(count)),
             let destination = cleaned.floatChannelData?[0]
-        else { return }
+        else {
+            output.drops.record(.conversionFailed)
+            return
+        }
         cleaned.frameLength = AVAudioFrameCount(count)
         microphoneSamples.withUnsafeBufferPointer { samples in
             for frame in 0..<frames {

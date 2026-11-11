@@ -16,11 +16,14 @@ struct MainAppLoginItem: LoginItem {
     func unregister() throws { try SMAppService.mainApp.unregister() }
 }
 
-/// The "Avvia all'accesso" switch. It is off by default and always reflects the
+/// The "Apri LARP all'accesso" switch. It is off by default and always reflects the
 /// real state of the login item; the state is also kept in `UserDefaults`.
 @MainActor
 @Observable
 final class LaunchAtLogin {
+    /// The instance shared by the app: the settings page observes it.
+    static let shared = LaunchAtLogin()
+
     /// The login item is on (`enabled`) or waiting for the user's approval in
     /// System Settings (`requiresApproval`).
     private(set) var isEnabled = false
@@ -53,7 +56,7 @@ final class LaunchAtLogin {
                 try item.unregister()
             }
         } catch {
-            errorMessage = "Impossibile cambiare l'avvio all'accesso: \(error.localizedDescription)"
+            errorMessage = L10n.format("Impossibile cambiare l'avvio all'accesso: %@", error.localizedDescription)
         }
         refresh()
     }

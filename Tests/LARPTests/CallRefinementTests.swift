@@ -78,7 +78,7 @@ private let validAnswer = answer([
 private func texts(_ call: Call) -> [String] { call.sortedLines.map(\.text) }
 private func speakers(_ call: Call) -> [String] { call.sortedLines.map(\.speakerName) }
 
-@Suite("call machine: transcript refinement")
+@Suite("call machine: transcript refinement", .italianInterface)
 struct RefinementTransitionTests {
     @Test("Separating participants → Ready or Refining transcript by the refinement switch")
     func separated() {
@@ -250,7 +250,7 @@ struct RefinementRequestTests {
     }
 }
 
-@Suite("call refinement", .serialized)
+@Suite("call refinement", .serialized, .italianInterface)
 @MainActor
 struct CallRefinementTests {
     private func refinableCall(_ harness: CallHarness, _ state: CallState = .ready) throws -> Call {

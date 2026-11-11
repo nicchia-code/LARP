@@ -3,8 +3,8 @@ import Observation
 
 /// The `assistant-status` machine: whether omp can be reached on the Mac.
 ///
-/// omp is looked for only while transcript refinement, call summaries or both
-/// are on. The two switches live in `UserDefaults` and are off by default; their
+/// omp is looked for only while transcript refinement, call summaries, questions and translations,
+/// or more of them are on. The three switches live in `UserDefaults` and are off by default; their
 /// controllers tell this one when the user turns them on or off.
 @MainActor
 @Observable
@@ -24,11 +24,12 @@ final class AssistantStatusController {
 
     private(set) var state: State
 
-    /// Refinement, summaries or both are on: omp is looked for.
+    /// Refinement, summaries, questions and translations, or more of them are on: omp is looked for.
     var isNeeded: Bool { state != .notNeeded }
 
     @ObservationIgnored private var refinementOn: Bool
     @ObservationIgnored private var summaryOn: Bool
+    @ObservationIgnored private var questionsOn: Bool
     @ObservationIgnored private let assistant: any AssistantChecking
     @ObservationIgnored private var task: Task<Void, Never>?
     /// Identifies the latest check; the result of an older one is ignored.
@@ -41,7 +42,8 @@ final class AssistantStatusController {
         self.assistant = assistant
         refinementOn = defaults.bool(forKey: SettingsKey.transcriptRefinement)
         summaryOn = defaults.bool(forKey: SettingsKey.callSummaries)
-        state = refinementOn || summaryOn ? .checking : .notNeeded
+        questionsOn = defaults.bool(forKey: SettingsKey.callQuestions)
+        state = refinementOn || summaryOn || questionsOn ? .checking : .notNeeded
     }
 
     // MARK: Events
@@ -68,15 +70,27 @@ final class AssistantStatusController {
         turnedOn()
     }
 
-    /// `user.TURN_OFF_REFINEMENT`: Needed → Not needed, only if summaries are off.
+    /// `user.TURN_ON_QUESTIONS`: Not needed → Needed, which enters Checking.
+    func questionsTurnedOn() {
+        questionsOn = true
+        turnedOn()
+    }
+
+    /// `user.TURN_OFF_REFINEMENT`: Needed → Not needed, only if summaries and questions are off.
     func refinementTurnedOff() {
         refinementOn = false
         turnedOff()
     }
 
-    /// `user.TURN_OFF_SUMMARY`: Needed → Not needed, only if refinement is off.
+    /// `user.TURN_OFF_SUMMARY`: Needed → Not needed, only if refinement and questions are off.
     func summaryTurnedOff() {
         summaryOn = false
+        turnedOff()
+    }
+
+    /// `user.TURN_OFF_QUESTIONS`: Needed → Not needed, only if refinement and summaries are off.
+    func questionsTurnedOff() {
+        questionsOn = false
         turnedOff()
     }
 
@@ -93,7 +107,7 @@ final class AssistantStatusController {
     }
 
     private func turnedOff() {
-        guard state != .notNeeded, !refinementOn, !summaryOn else { return }
+        guard state != .notNeeded, !refinementOn, !summaryOn, !questionsOn else { return }
         task?.cancel()
         task = nil
         generation += 1

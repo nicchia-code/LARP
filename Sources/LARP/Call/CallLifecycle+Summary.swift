@@ -33,14 +33,14 @@ extension CallLifecycle {
         runningSummaries[id]?.task.cancel()
         summaryCounter += 1
         let token = summaryCounter
-        let request = SummaryRequest(call: call)
+        let request = SummaryRequest(call: call, languageChoice: summaryLanguage())
         let task = Task {
             do {
                 // A line without participant is not sent: the summary fails.
                 guard let request else { throw RefinementError.lineWithoutParticipant }
                 let answer = try await summarizer.refine(prompt: request.prompt)
                 try Task.checkCancellation()
-                finishSummary(callID: id, answer: answer)
+                finishSummary(callID: id, answer: answer, request: request)
             } catch {
                 // Stopped (turned off, deleted, replaced): not a failure.
                 if !Task.isCancelled {
@@ -55,27 +55,33 @@ extension CallLifecycle {
         runningSummaries[id] = (token, task)
     }
 
-    private func finishSummary(callID: UUID, answer: String) {
+    private func finishSummary(callID: UUID, answer: String, request: SummaryRequest) {
         guard let call = call(id: callID), call.summaryState == .writing else { return }
         let participants = Set(call.participants.map(\.number))
-        guard let summary = SummaryRequest.summary(from: answer, participants: participants) else {
+        guard let summary = SummaryRequest.summary(from: answer, participants: participants, lines: request.lines)
+        else {
             Self.logger.error("The answer of the assistant is not a valid summary")
             applySummary(.summaryFailed, to: call)
             return
         }
-        // The new summary replaces the earlier one in the same save as the new state.
+        // The new summary replaces the earlier one in the same save as the new state; every
+        // action starts not done, so the ticks of the earlier one are lost.
         if let old = call.summary {
             call.summary = nil
             context.delete(old)
         }
         call.summary = CallSummary(
+            opening: summary.opening,
+            openingHighlight: summary.openingHighlight,
             keyConcepts: summary.keyConcepts,
-            decisions: summary.decisions,
-            nextSteps: summary.nextSteps,
+            decisionItems: summary.decisions,
+            actionItems: summary.actionItems,
+            openQuestions: summary.openQuestions,
             text: summary.text,
-            language: call.transcriptionLanguage,
+            language: request.language,
             writtenAt: now())
         applySummary(.summaryWritten, to: call)
+        callChanges.emit(.exportChanged(callID))
     }
 
     private func failSummary(callID: UUID) {
@@ -131,6 +137,19 @@ extension CallLifecycle {
     /// `user.SUMMARIZE_CALL`.
     func summarize(_ call: Call) {
         applySummary(summarizeEvent(for: call), to: call)
+    }
+
+    /// `user.TOGGLE_ACTION_ITEM`: the action item at `index` of the summary of `call` becomes done,
+    /// or not done again, and the choice is saved. The state of the summary does not change.
+    /// Nothing happens when the call has no summary or no such action item.
+    func toggleActionItem(of call: Call, at index: Int) {
+        guard let summary = call.summary else { return }
+        var items = summary.actionItems
+        guard items.indices.contains(index) else { return }
+        items[index].isDone.toggle()
+        summary.actionItems = items
+        save()
+        callChanges.emit(.exportChanged(call.id))
     }
 
     private func summarizeEvent(for call: Call) -> SummaryEvent {

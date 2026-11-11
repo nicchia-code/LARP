@@ -12,6 +12,11 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>it</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
@@ -26,6 +31,8 @@
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>LARP registra l'audio di sistema per catturare la voce degli altri partecipanti alle call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>LARP legge il calendario per dare il nome alle registrazioni e indicare chi c'era alla riunione. I dati del calendario restano sul tuo Mac e non vengono mai inviati a nessun servizio esterno.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>LARP usa il microfono per registrare la tua voce durante le call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno.</string>
 </dict>

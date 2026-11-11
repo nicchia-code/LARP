@@ -19,13 +19,14 @@ enum CallSearch {
         calls.filter { matches($0, query: query) }
     }
 
-    /// Title as shown (the default one when the user gave none), transcript lines, participant names
-    /// and the summary as shown, with the current names of the participants. A summary stays
-    /// searchable while call summaries are off.
+    /// Title as shown (the default one when the user gave none), transcript lines, participant names,
+    /// the text of the notes and the summary as shown, with the current names of the participants. A
+    /// summary stays searchable while call summaries are off.
     static func fields(of call: Call) -> [String] {
         var fields = [call.displayTitle]
         fields.append(contentsOf: call.lines.map(\.text))
         fields.append(contentsOf: call.participants.compactMap(\.name))
+        fields.append(contentsOf: call.notes.map(\.text))
         if let summary = SummaryContent(call: call) {
             fields.append(contentsOf: summary.searchableTexts)
         }

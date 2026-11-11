@@ -76,11 +76,19 @@ enum SpeechTrackConfiguration {
         let safeEnd = end.isFinite ? max(safeStart, end) : safeStart
         return TranscribedLine(speaker: speaker, start: safeStart, end: safeEnd, text: text)
     }
+
+    /// What the track recognises after `result`: its text for a volatile result, nothing after
+    /// a final one, whose text has become a line.
+    static func recognisedText(from result: SpeechTranscriber.Result, speaker: SpeakerKind) -> RecognisedText {
+        let text = result.isFinal ? "" : String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        return RecognisedText(speaker: speaker, text: text)
+    }
 }
 
 /// Live transcription of one track: audio is fed as it is captured.
 private final class LiveTrackTranscriber: @unchecked Sendable {
     let lines: AsyncStream<TranscribedLine>
+    let recognised: AsyncStream<RecognisedText>
     private let analyzer: SpeechAnalyzer
     private let input: AsyncStream<AnalyzerInput>.Continuation
     private let resultsTask: Task<Void, any Error>
@@ -98,9 +106,14 @@ private final class LiveTrackTranscriber: @unchecked Sendable {
 
         let (inputStream, input) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .unbounded)
         let (lines, linesContinuation) = AsyncStream<TranscribedLine>.makeStream(bufferingPolicy: .unbounded)
+        let (recognised, recognisedContinuation) = AsyncStream<RecognisedText>.makeStream(bufferingPolicy: .unbounded)
         let resultsTask = Task {
-            defer { linesContinuation.finish() }
+            defer {
+                linesContinuation.finish()
+                recognisedContinuation.finish()
+            }
             for try await result in transcriber.results {
+                recognisedContinuation.yield(SpeechTrackConfiguration.recognisedText(from: result, speaker: speaker))
                 if let line = SpeechTrackConfiguration.line(from: result, speaker: speaker) {
                     linesContinuation.yield(line)
                 }
@@ -114,16 +127,17 @@ private final class LiveTrackTranscriber: @unchecked Sendable {
             throw error
         }
         return LiveTrackTranscriber(
-            lines: lines, analyzer: analyzer, input: input, resultsTask: resultsTask,
+            lines: lines, recognised: recognised, analyzer: analyzer, input: input, resultsTask: resultsTask,
             converter: BufferConverter(target: format))
     }
 
     private init(
-        lines: AsyncStream<TranscribedLine>, analyzer: SpeechAnalyzer,
+        lines: AsyncStream<TranscribedLine>, recognised: AsyncStream<RecognisedText>, analyzer: SpeechAnalyzer,
         input: AsyncStream<AnalyzerInput>.Continuation, resultsTask: Task<Void, any Error>,
         converter: BufferConverter
     ) {
         self.lines = lines
+        self.recognised = recognised
         self.analyzer = analyzer
         self.input = input
         self.resultsTask = resultsTask
@@ -161,7 +175,9 @@ private final class LiveTrackTranscriber: @unchecked Sendable {
 /// Live transcription of both tracks.
 private final class SpeechLiveSession: LiveTranscriptionSession, @unchecked Sendable {
     let lines: AsyncStream<TranscribedLine>
+    let recognised: AsyncStream<RecognisedText>
     private let linesContinuation: AsyncStream<TranscribedLine>.Continuation
+    private let recognisedContinuation: AsyncStream<RecognisedText>.Continuation
     private let tracks: [(track: AudioTrack, transcriber: LiveTrackTranscriber)]
     private let audio: [AudioTrack: AsyncStream<AudioChunk>.Continuation]
     private let audioPumps: [Task<Void, Never>]
@@ -169,6 +185,7 @@ private final class SpeechLiveSession: LiveTranscriptionSession, @unchecked Send
 
     init(microphone: LiveTrackTranscriber, system: LiveTrackTranscriber) {
         (lines, linesContinuation) = AsyncStream<TranscribedLine>.makeStream(bufferingPolicy: .unbounded)
+        (recognised, recognisedContinuation) = AsyncStream<RecognisedText>.makeStream(bufferingPolicy: .unbounded)
         tracks = [(.microphone, microphone), (.system, system)]
 
         var audio: [AudioTrack: AsyncStream<AudioChunk>.Continuation] = [:]
@@ -185,10 +202,17 @@ private final class SpeechLiveSession: LiveTranscriptionSession, @unchecked Send
                     }
                 })
             let forward = linesContinuation
+            let forwardRecognised = recognisedContinuation
             forwarders.append(
                 Task {
                     for await line in transcriber.lines {
                         forward.yield(line)
+                    }
+                })
+            forwarders.append(
+                Task {
+                    for await text in transcriber.recognised {
+                        forwardRecognised.yield(text)
                     }
                 })
         }
@@ -212,6 +236,7 @@ private final class SpeechLiveSession: LiveTranscriptionSession, @unchecked Send
         }
         for forwarder in forwarders { await forwarder.value }
         linesContinuation.finish()
+        recognisedContinuation.finish()
         return complete
     }
 
@@ -221,6 +246,7 @@ private final class SpeechLiveSession: LiveTranscriptionSession, @unchecked Send
         for (_, transcriber) in tracks { await transcriber.cancel() }
         for forwarder in forwarders { forwarder.cancel() }
         linesContinuation.finish()
+        recognisedContinuation.finish()
     }
 }
 

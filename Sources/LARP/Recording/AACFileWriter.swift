@@ -17,7 +17,7 @@ final class AACFileWriter {
         let status: OSStatus
         var description: String { "\(operation) failed (OSStatus \(status))" }
         var errorDescription: String? {
-            "Impossibile salvare l'audio su disco (\(operation), errore \(status))."
+            L10n.format("Impossibile salvare l'audio su disco (%@, errore %d).", operation, Int32(status))
         }
     }
 

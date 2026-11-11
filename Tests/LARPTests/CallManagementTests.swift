@@ -5,7 +5,7 @@ import Testing
 
 @testable import LARP
 
-@Suite("Call management", .serialized)
+@Suite("Call management", .serialized, .italianInterface)
 @MainActor
 struct CallManagementTests {
     private static var utc: Calendar {

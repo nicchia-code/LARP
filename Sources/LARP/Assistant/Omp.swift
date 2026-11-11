@@ -2,7 +2,8 @@ import Foundation
 
 /// Starting omp as an ACP agent.
 enum Omp {
-    /// Time omp has to answer `initialize`.
+    /// Time limit of the omp check and default time omp has to answer `initialize`.
+    /// The refinement and the summary pass their own limit of 600 seconds instead.
     static let initializeTimeout: Duration = .seconds(10)
 
     /// Runs `body` with a new empty temporary folder, deleted afterwards. omp

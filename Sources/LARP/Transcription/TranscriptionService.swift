@@ -11,12 +11,25 @@ struct TranscribedLine: Equatable, Sendable {
     let text: String
 }
 
+/// What a track is recognising right now: the text of the last result of its live transcriber.
+/// Every new result replaces the previous one; an empty `text` follows a final result, whose
+/// text has become a line. It is never stored.
+struct RecognisedText: Equatable, Sendable {
+    /// `.me` for the microphone track, `.others` for the system audio track.
+    let speaker: SpeakerKind
+    let text: String
+}
+
 /// Transcription of the two tracks of a call while it is recorded.
 /// Fed with the audio by the capture, once the audio is on disk.
 protocol LiveTranscriptionSession: AudioBufferSink {
     /// The final lines of both tracks as they come, in no particular order. Ends
     /// after `finish()` or `cancel()`. Meant for a single consumer.
     var lines: AsyncStream<TranscribedLine> { get }
+
+    /// The text being recognised, as the volatile results of both tracks come. Ends after
+    /// `finish()` or `cancel()`. Meant for a single consumer.
+    var recognised: AsyncStream<RecognisedText> { get }
 
     /// Ends the audio and waits until everything fed has been transcribed. Returns
     /// `true` when the whole recording was transcribed live, `false` when part of

@@ -30,7 +30,7 @@ extension CallLifecycle {
     /// its summary is going.
     func statusLabel(of call: Call) -> String? {
         if call.state == .transcribing, failedTranscriptions.contains(call.id) {
-            return "Trascrizione non riuscita, nuovo tentativo a breve"
+            return L10n.string("Trascrizione non riuscita, nuovo tentativo a breve")
         }
         if call.state == .ready {
             return call.summaryState.statusLabel

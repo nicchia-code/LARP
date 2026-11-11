@@ -60,8 +60,9 @@ enum CaptureEvent: Equatable, Sendable {
     /// A recording with an optional system audio records only the microphone.
     /// `permissionMissing` tells that the system audio permission is the reason.
     case systemAudioUnavailable(permissionMissing: Bool)
-    /// The microphone started or restarted while the system audio is recorded: whether
-    /// the sound of the others is removed from it.
+    /// The microphone started or restarted while the system audio is recorded, or the
+    /// system audio is being recorded again after it was lost (even when the microphone
+    /// is still lost): whether the sound of the others is removed from the microphone.
     case echoCancellation(available: Bool)
     /// The microphone could not start again after a change of audio devices: the
     /// recording goes on without the user's voice.
@@ -85,6 +86,16 @@ protocol AudioCapturing: Sendable {
     /// With `.optional` and no system audio, only the microphone is captured and
     /// `system.caf` stays empty.
     func start(into folder: URL, sink: (any AudioBufferSink)?, systemAudio: SystemAudioPolicy) async throws
+
+    /// `user.PAUSE_RECORDING` / `user.RESUME_RECORDING`: while paused both tracks are written
+    /// with silence in place of what is captured, and the sink receives the same silence.
+    /// Does nothing when no capture is running.
+    func setPaused(_ paused: Bool)
+
+    /// `user.CHOOSE_MICROPHONE`: another microphone was chosen (the choice is already saved).
+    /// A running microphone starts again on the microphone to use only if that changed; a lost
+    /// one tries again. Does nothing when no capture is running.
+    func microphoneChoiceChanged()
 
     /// Stops capturing and closes the files. Returns after everything captured
     /// has been written and given to the sink.

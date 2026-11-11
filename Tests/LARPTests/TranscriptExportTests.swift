@@ -3,7 +3,7 @@ import Testing
 
 @testable import LARP
 
-@Suite("TranscriptExport")
+@Suite("TranscriptExport", .italianInterface)
 @MainActor
 struct TranscriptExportTests {
     private func makeCall(title: String?) -> Call {
@@ -24,13 +24,15 @@ struct TranscriptExportTests {
         return call
     }
 
-    @Test("the export has an H1, the info line and one paragraph per line")
+    @Test("the export has an H1, the info line, the transcript heading and one paragraph per line")
     func markdownFormat() {
         let markdown = TranscriptExport.markdown(for: makeCall(title: "Weekly"))
         let expected = """
             # Weekly
 
             27 ottobre 2026, 10:41 · durata 12:34 · lingua italiano (Italia)
+
+            ## Trascrizione
 
             **Io** [00:03]: Ciao a tutti
 
@@ -75,13 +77,16 @@ struct TranscriptExportTests {
         let call = makeCall(title: "Weekly")
         call.participants.append(Participant(number: 2))
         call.summary = CallSummary(
+            opening: "Si parte a marzo con Partecipante 1.",
+            openingHighlight: "marzo",
             keyConcepts: ["Budget alto", "Scadenza vicina"],
-            decisions: [],
-            nextSteps: [
-                SummaryNextStep(text: "Inviare il piano", owner: "Partecipante 1"),
-                SummaryNextStep(text: "Prenotare la sala", owner: "Io"),
-                SummaryNextStep(text: "Chiamare il cliente"),
+            decisionItems: [SummaryDecision(text: "Partire", lineStart: 65.4), SummaryDecision(text: "Assumere")],
+            actionItems: [
+                SummaryActionItem(text: "Inviare il piano", owner: "Partecipante 1", due: "venerdì"),
+                SummaryActionItem(text: "Prenotare la sala", owner: "Io", isDone: true),
+                SummaryActionItem(text: "Chiamare il cliente"),
             ],
+            openQuestions: ["Chi paga?"],
             text: "Partecipante 2 resta in dubbio.",
             language: "it-IT"
         )
@@ -92,20 +97,27 @@ struct TranscriptExportTests {
 
             ## Sintesi
 
+            Si parte a **marzo** con Anna.
+
+            ### Decisioni
+
+            - [01:05] Partire
+            - Assumere
+
+            ### Azioni
+
+            - [ ] Inviare il piano · Anna · venerdì
+            - [x] Prenotare la sala · Io
+            - [ ] Chiamare il cliente
+
+            ### Rimasto aperto
+
+            - Chi paga?
+
             ### Concetti chiave
 
             - Budget alto
             - Scadenza vicina
-
-            ### Decisioni
-
-            Nessuno
-
-            ### Prossimi passi
-
-            - Inviare il piano (Anna)
-            - Prenotare la sala (Io)
-            - Chiamare il cliente
 
             ### Altro
 
@@ -121,19 +133,98 @@ struct TranscriptExportTests {
         #expect(TranscriptExport.markdown(for: call) == expected)
     }
 
-    @Test("an English summary has English titles and leaves out an empty free text")
-    func markdownWithEnglishSummary() {
-        let call = makeCall(title: "Weekly")
-        call.summary = CallSummary(keyConcepts: ["Budget"], language: "en-US")
-        let markdown = TranscriptExport.markdown(for: call)
-        #expect(
-            markdown.contains(
-                "## Sintesi\n\n### Key concepts\n\n- Budget\n\n### Decisions\n\nNone\n\n### Next steps\n\nNone\n\n## Trascrizione\n\n"))
-        #expect(!markdown.contains("### Other"))
+    @Test("the English interface exports English headings, names and titles")
+    func markdownInEnglish() {
+        let call = makeCall(title: nil)
+        call.callAppName = "Zoom"
+        call.summary = CallSummary(keyConcepts: ["Budget"], language: "it-IT")
+        let expected = """
+            # Call on 27 October 2026, 10:41
+
+            27 October 2026, 10:41 · duration 12:34 · language Italian (Italy)
+
+            ## Summary
+
+            ### Decisions
+
+            None
+
+            ### Action items
+
+            None
+
+            ### Left open
+
+            None
+
+            ### Key concepts
+
+            - Budget
+
+            ## Transcript
+
+            **Me** [00:03]: Ciao a tutti
+
+            **Anna** [01:05]: Buongiorno
+
+            """
+        #expect(TranscriptExport.markdown(for: call, language: .english) == expected)
+        #expect(TranscriptExport.defaultFileName(for: call, language: .english) == "Call on 27 October 2026, 10:41")
     }
 
-    @Test("a call without a summary has no ## headings")
+    @Test("a call without summary, notes and bookmarks has only the transcript heading")
     func markdownWithoutSummary() {
-        #expect(!TranscriptExport.markdown(for: makeCall(title: "Weekly")).contains("##"))
+        let markdown = TranscriptExport.markdown(for: makeCall(title: "Weekly"))
+        #expect(markdown.components(separatedBy: "\n").filter { $0.hasPrefix("##") } == ["## Trascrizione"])
+    }
+
+    @Test("notes and bookmarks come after the summary and before the transcript, in order of time")
+    func markdownWithNotesAndBookmarks() {
+        let call = makeCall(title: "Weekly")
+        call.notes.append(Note(text: "Senza ora", writtenAt: Date(timeIntervalSince1970: 20)))
+        call.notes.append(Note(text: "Chiedere il budget", time: 65.9, writtenAt: Date(timeIntervalSince1970: 10)))
+        call.bookmarks.append(Bookmark(time: 66))
+        call.bookmarks.append(Bookmark(time: 400))
+        call.bookmarks.append(Bookmark(time: 4))
+        let expected = """
+            # Weekly
+
+            27 ottobre 2026, 10:41 · durata 12:34 · lingua italiano (Italia)
+
+            ## Note
+
+            - [01:05] Chiedere il budget
+            - Senza ora
+
+            ## Segnalibri
+
+            - [00:04] Ciao a tutti
+            - [01:06] Buongiorno
+            - [06:40]
+
+            ## Trascrizione
+
+            **Io** [00:03]: Ciao a tutti
+
+            **Anna** [01:05]: Buongiorno
+
+            """
+        #expect(TranscriptExport.markdown(for: call) == expected)
+
+        call.summary = CallSummary(keyConcepts: ["Budget"], language: "it-IT")
+        let headings = TranscriptExport.markdown(for: call).components(separatedBy: "\n").filter {
+            $0.hasPrefix("## ")
+        }
+        #expect(headings == ["## Sintesi", "## Note", "## Segnalibri", "## Trascrizione"])
+    }
+
+    @Test("the copied summary is the summary without its heading, the opening first")
+    func summaryTextWithoutHeading() {
+        let call = makeCall(title: "Weekly")
+        #expect(TranscriptExport.summaryText(for: call) == nil)
+        call.summary = CallSummary(opening: "Si parte.", openingHighlight: "Si parte", keyConcepts: ["Budget"], language: "it-IT")
+        let text = TranscriptExport.summaryText(for: call)
+        #expect(text?.hasPrefix("**Si parte**.\n\n### Decisioni\n\nNessuno") == true)
+        #expect(text?.contains("## Sintesi") == false)
     }
 }

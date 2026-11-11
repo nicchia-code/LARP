@@ -107,19 +107,21 @@ let fakeBufferSeconds = 0.1
 // MARK: - System audio
 
 /// The Core Audio side of the system audio: the output device runs at `rate`, which a test
-/// changes, and every capture labels its buffers with the rate it read when it started.
+/// changes, and every capture labels its buffers with the rate its stream really runs at,
+/// which is not always the one the tap reports.
 final class FakeSystemDriver: SystemAudioDriver {
-    private final class Capture: SystemAudioHandle, @unchecked Sendable {
-        let labelRate: Double
+    private final class Capture: SystemAudioRun, @unchecked Sendable {
+        let formats: SystemAudioFormats
+        var labelRate: Double { formats.stream.sampleRate }
         let deliver: @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void
         let onChange: @Sendable () -> Void
         let active = Mutex(true)
 
         init(
-            labelRate: Double, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
+            formats: SystemAudioFormats, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
             onChange: @escaping @Sendable () -> Void
         ) {
-            self.labelRate = labelRate
+            self.formats = formats
             self.deliver = deliver
             self.onChange = onChange
         }
@@ -136,9 +138,11 @@ final class FakeSystemDriver: SystemAudioDriver {
 
     private struct State {
         var rate: Double
+        var reportedRate: Double?
         var failure: SystemAudioTap.TapError?
         var capture: Capture?
         var observation: Observation?
+        var formats: [SystemAudioFormats] = []
     }
 
     let tone: FakeTone
@@ -148,9 +152,11 @@ final class FakeSystemDriver: SystemAudioDriver {
     /// Times the devices were observed because no capture could start.
     let observations = Counter()
 
-    init(tone: FakeTone, rate: Double = 48_000) {
+    /// - Parameter reportedRate: the rate the tap reports for itself, when it is not the
+    ///   rate its stream runs at (`rate`).
+    init(tone: FakeTone, rate: Double = 48_000, reportedRate: Double? = nil) {
         self.tone = tone
-        state = Mutex(State(rate: rate))
+        state = Mutex(State(rate: rate, reportedRate: reportedRate))
     }
 
     /// Makes the captures fail (or not) from now on.
@@ -159,18 +165,39 @@ final class FakeSystemDriver: SystemAudioDriver {
     }
 
     func startCapture(
-        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void
-    ) throws -> any SystemAudioHandle {
+        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void,
+        drops: BufferDrops
+    ) throws -> any SystemAudioRun {
         let result = state.withLock { state -> Result<Capture, SystemAudioTap.TapError> in
             if let failure = state.failure { return .failure(failure) }
-            let capture = Capture(labelRate: state.rate, deliver: deliver, onChange: onChange)
+            // The audio is read at the rate the stream really runs at, whatever the tap reports.
+            let capture = Capture(
+                formats: SystemAudioFormats(
+                    reported: Self.format(rate: state.reportedRate ?? state.rate, channels: tone.channels),
+                    stream: Self.format(rate: state.rate, channels: tone.channels)),
+                deliver: deliver, onChange: onChange)
             state.capture = capture
+            state.formats.append(capture.formats)
             return .success(capture)
         }
         let capture = try result.get()
         starts.increment()
         return capture
     }
+
+    private static func format(rate: Double, channels: Int) -> AVAudioFormat {
+        AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: AVAudioChannelCount(channels), interleaved: false)!
+    }
+
+    /// The format the tap reports from now on, when it is not the one of its stream (`nil`:
+    /// the same).
+    func report(rate: Double?) {
+        state.withLock { $0.reportedRate = rate }
+    }
+
+    /// The formats of every capture that started, in order.
+    var formats: [SystemAudioFormats] { state.withLock { $0.formats } }
 
     func observeDevices(onChange: @escaping @Sendable () -> Void) -> any SystemAudioHandle {
         let observation = Observation(onChange: onChange)
@@ -195,9 +222,10 @@ final class FakeSystemDriver: SystemAudioDriver {
         }
     }
 
-    /// The device plays `seconds` of the tone at its rate. A running capture hears it,
-    /// labelled with the rate it read when it started; with none, the time just passes.
-    func play(seconds: Double) {
+    /// The device plays `seconds` of the tone at its rate (of silence when `silent`: audio
+    /// that arrives all the same). A running capture hears it, labelled with the rate it
+    /// read when it started; with none, the time just passes.
+    func play(seconds: Double, silent: Bool = false) {
         var remaining = seconds
         while remaining > 1e-9 {
             let piece = min(remaining, fakeBufferSeconds)
@@ -208,6 +236,11 @@ final class FakeSystemDriver: SystemAudioDriver {
                 continue
             }
             let (buffer, arrival) = tone.next(seconds: piece, rate: rate, labelRate: capture.labelRate)
+            if silent {
+                for channel in 0..<tone.channels {
+                    buffer.floatChannelData![channel].update(repeating: 0, count: Int(buffer.frameLength))
+                }
+            }
             capture.deliver(buffer, arrival)
         }
     }

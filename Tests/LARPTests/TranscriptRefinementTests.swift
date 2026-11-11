@@ -260,10 +260,10 @@ struct AssistantStatusMachineTests {
 
     @Test("the status of omp is shown only while Needed")
     func assistantStatusTexts() {
-        #expect(SettingsView.assistantText(.notNeeded) == nil)
-        #expect(SettingsView.assistantText(.checking) == "Verifica in corso…")
-        #expect(SettingsView.assistantText(.assistantReady) == "omp pronto")
-        #expect(SettingsView.assistantText(.assistantMissing) == "omp non trovato")
+        #expect(SettingsText.assistantStatus(.notNeeded, language: .italian) == nil)
+        #expect(SettingsText.assistantStatus(.checking, language: .italian) == "Verifica in corso…")
+        #expect(SettingsText.assistantStatus(.assistantReady, language: .italian) == "omp pronto")
+        #expect(SettingsText.assistantStatus(.assistantMissing, language: .italian) == "omp non trovato")
     }
 }
 

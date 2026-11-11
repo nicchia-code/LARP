@@ -12,6 +12,9 @@ protocol TrackPlayer: AnyObject {
     /// changed and the engine could not start again. The player is then halted: it plays
     /// nothing, and `start(at:onFinished:)` restarts it on the output current at that moment.
     var onInterrupted: (@MainActor (TimeInterval) -> Void)? { get set }
+    /// Times the audio is played at (1 is the speed it was recorded at); applies at once, also while
+    /// playing. The pitch of voices does not change, and `currentTime` stays in the time of the audio.
+    var speed: Double { get set }
     /// Starts (or restarts) all tracks at `time`. `onFinished` runs once, when the
     /// audio reaches its end; it does not run if playback is stopped or restarted first.
     func start(at time: TimeInterval, onFinished: @escaping @MainActor () -> Void)
@@ -20,8 +23,8 @@ protocol TrackPlayer: AnyObject {
     func unload()
 }
 
-/// `TrackPlayer` that plays the files of a call with `AVAudioEngine`, one player
-/// node per file, started at the same host time so that the tracks stay aligned.
+/// `TrackPlayer` that plays the files of a call with `AVAudioEngine`, one player node per file,
+/// through one time-pitch unit shared by all, started at the same host time so that the tracks stay aligned.
 @MainActor
 final class EngineTrackPlayer: TrackPlayer {
     private struct Track {
@@ -36,6 +39,9 @@ final class EngineTrackPlayer: TrackPlayer {
     }
 
     let engine = AVAudioEngine()
+    /// Joins the tracks before the time-pitch unit, which takes one input.
+    private let trackMixer = AVAudioMixerNode()
+    private let timePitch = AVAudioUnitTimePitch()
     private let tracks: [Track]
     private var startTime: TimeInterval = 0
     /// Last time of the call known to be reached: it survives the engine being stopped, when
@@ -56,17 +62,40 @@ final class EngineTrackPlayer: TrackPlayer {
             guard let file = try? AVAudioFile(forReading: url), file.length > 0 else { continue }
             let node = AVAudioPlayerNode()
             engine.attach(node)
-            engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
             tracks.append(Track(node: node, file: file))
         }
         self.tracks = tracks
         self.duration = tracks.map { Double($0.file.length) / $0.file.processingFormat.sampleRate }.max() ?? 0
+        engine.attach(trackMixer)
+        engine.attach(timePitch)
+        connectTracks()
+
         // `macos.AUDIO_DEVICES_CHANGED`: the engine stops when the audio output changes.
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.outputChanged() }
         }
+    }
+
+    /// The audio goes from every player node, through one mixer that joins the tracks and the
+    /// time-pitch unit they share, to the main mixer. The nodes keep the format of their file; the
+    /// joined tracks are stereo at the rate of the first one.
+    private func connectTracks() {
+        guard let first = tracks.first else { return }
+        let joined = AVAudioFormat(standardFormatWithSampleRate: first.file.processingFormat.sampleRate, channels: 2)
+        for track in tracks {
+            engine.connect(track.node, to: trackMixer, format: track.file.processingFormat)
+        }
+        engine.connect(trackMixer, to: timePitch, format: joined)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: joined)
+    }
+
+    /// Times the audio is played at; it is the rate of the time-pitch unit, which keeps the pitch of
+    /// voices. The time reached is read in samples of the files, so it stays in the time of the audio.
+    var speed: Double {
+        get { Double(timePitch.rate) }
+        set { timePitch.rate = Float(newValue) }
     }
 
     var currentTime: TimeInterval {
@@ -140,8 +169,8 @@ final class EngineTrackPlayer: TrackPlayer {
         return .started
     }
 
-    /// `macos.AUDIO_DEVICES_CHANGED`: the engine is stopped, every node is connected again to
-    /// the main mixer with the format of its file and, while playing, the audio goes on from
+    /// `macos.AUDIO_DEVICES_CHANGED`: the engine is stopped, every node and the time-pitch unit are
+    /// connected again, each node with the format of its file, and, while playing, the audio goes on from
     /// the time reached before the change; if the engine cannot start again, the player halts
     /// and reports the time reached through `onInterrupted`.
     private func outputChanged() {
@@ -150,9 +179,7 @@ final class EngineTrackPlayer: TrackPlayer {
         let position = min(currentTime, duration)
         generation += 1
         halt()
-        for track in tracks {
-            engine.connect(track.node, to: engine.mainMixerNode, format: track.file.processingFormat)
-        }
+        connectTracks()
         guard wasPlaying else { return }
         switch launch(at: position) {
         case .started:

@@ -94,11 +94,11 @@ struct CallSummaryStorageTests {
         let call = Call(transcriptionLanguage: "it-IT", state: .ready)
         call.summary = CallSummary(
             keyConcepts: ["Budget", "Scadenze"],
-            decisions: ["Si parte a marzo", "Assumere due persone"],
-            nextSteps: [
-                SummaryNextStep(text: "Inviare il piano", owner: "Io"),
-                SummaryNextStep(text: "Prenotare la sala", owner: "Partecipante 2"),
-                SummaryNextStep(text: "Rivedere il contratto"),
+            decisionItems: [SummaryDecision(text: "Si parte a marzo"), SummaryDecision(text: "Assumere due persone")],
+            actionItems: [
+                SummaryActionItem(text: "Inviare il piano", owner: "Io"),
+                SummaryActionItem(text: "Prenotare la sala", owner: "Partecipante 2"),
+                SummaryActionItem(text: "Rivedere il contratto"),
             ],
             text: "Riunione sul lancio.",
             language: "it-IT",
@@ -112,9 +112,9 @@ struct CallSummaryStorageTests {
         #expect(stored.summaryState == .written)
         let summary = try #require(stored.summary)
         #expect(summary.keyConcepts == ["Budget", "Scadenze"])
-        #expect(summary.decisions == ["Si parte a marzo", "Assumere due persone"])
-        #expect(summary.nextSteps.map(\.text) == ["Inviare il piano", "Prenotare la sala", "Rivedere il contratto"])
-        #expect(summary.nextSteps.map(\.owner) == ["Io", "Partecipante 2", nil])
+        #expect(summary.decisionItems.map(\.text) == ["Si parte a marzo", "Assumere due persone"])
+        #expect(summary.actionItems.map(\.text) == ["Inviare il piano", "Prenotare la sala", "Rivedere il contratto"])
+        #expect(summary.actionItems.map(\.owner) == ["Io", "Partecipante 2", nil])
         #expect(summary.text == "Riunione sul lancio.")
         #expect(summary.language == "it-IT")
         #expect(summary.writtenAt == writtenAt)

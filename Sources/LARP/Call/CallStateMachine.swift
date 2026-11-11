@@ -22,10 +22,14 @@ enum CallEvent: Equatable, Sendable {
     case refinementFailed
     /// `user.TURN_OFF_REFINEMENT`
     case turnOffRefinement
-    /// `user.REFINE_TRANSCRIPT`. `refinementOn`: transcript refinement is on.
+    /// `user.REFINE_TRANSCRIPT`. `refinementOn`: transcript refinement is on; only a Ready
+    /// call looks at it, a call awaiting a refinement retry is refined again either way.
     case refineTranscript(refinementOn: Bool)
     /// `user.RESTORE_TRANSCRIPT`. `refined`: the transcript has been refined.
     case restoreTranscript(refined: Bool)
+    /// `user.EDIT_LINE`. `lineBelongsToCall`: the line is one of this call's. `textIsEmpty`: the new
+    /// text is empty once trimmed.
+    case editLine(lineBelongsToCall: Bool, textIsEmpty: Bool)
     /// `macos.NETWORK_AVAILABLE`
     case networkAvailable
     /// `user.RENAME_CALL`
@@ -34,6 +38,11 @@ enum CallEvent: Equatable, Sendable {
     case renameParticipant
     /// `user.DELETE_CALL`
     case deleteCall
+    /// `time.AUDIO_RETENTION_CHECK_DUE`, `macos.APP_LAUNCHED` and `user.CHOOSE_AUDIO_RETENTION`, which
+    /// every one asks the same of a Ready call. `limited`: the audio is kept for a limited time.
+    /// `expired`: the call started more than that time ago. `hasAudio`: it still has its audio.
+    /// `summaryBeingWritten`: its summary is being written.
+    case audioRetentionCheck(limited: Bool, expired: Bool, hasAudio: Bool, summaryBeingWritten: Bool)
 }
 
 /// Where a transition leads: another state, or the end of the call (**Deleted**,
@@ -47,6 +56,12 @@ enum CallTransitionTarget: Equatable, Sendable {
 /// Pure: it only says where an event leads; `CallLifecycle` performs the effects.
 /// A state that does not react to an event has no entry (`nil`).
 enum CallStateMachine {
+    /// `user.IMPORT_AUDIO` in **Created**: where a call goes once the file has been converted into its
+    /// system audio track, by whether the language of the call is ready.
+    static func stateAfterImport(languageReady: Bool) -> CallState {
+        languageReady ? .transcribing : .awaitingLanguage
+    }
+
     static func target(from state: CallState, on event: CallEvent) -> CallTransitionTarget? {
         switch (state, event) {
         // Recording
@@ -96,12 +111,16 @@ enum CallStateMachine {
             return .state(.ready)
 
         // Ready
+        case (.ready, .audioRetentionCheck(let limited, let expired, let hasAudio, let summaryBeingWritten)):
+            return limited && expired && hasAudio && !summaryBeingWritten ? .state(.ready) : nil
         case (.ready, .renameParticipant):
             return .state(.ready)
         case (.ready, .refineTranscript(let refinementOn)):
             return refinementOn ? .state(.refiningTranscript) : nil
         case (.ready, .restoreTranscript(let refined)):
             return refined ? .state(.ready) : nil
+        case (.ready, .editLine(let lineBelongsToCall, let textIsEmpty)):
+            return lineBelongsToCall && !textIsEmpty ? .state(.ready) : nil
 
         // Rename and delete: every state but Recording, the same state for a rename
         case (.recording, .renameCall), (.recording, .deleteCall):

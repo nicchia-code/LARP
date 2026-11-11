@@ -1,8 +1,8 @@
 import AVFoundation
 import Foundation
 
-/// What `MicrophoneCapture` needs from the audio engine that reads the default input
-/// device; replaced in tests by fake devices.
+/// What `MicrophoneCapture` needs from the audio engine that reads the microphone to use;
+/// replaced in tests by fake devices.
 ///
 /// An engine is used for one start only: `MicrophoneCapture` makes a new one at every
 /// start and restart, so the format it reads is the one the microphone delivers now.
@@ -27,11 +27,27 @@ protocol MicrophoneEngine: AnyObject, Sendable {
     func stop()
 }
 
-/// `MicrophoneEngine` on `AVAudioEngine` and the default input device, with macOS voice
-/// processing never enabled.
+/// `MicrophoneEngine` on `AVAudioEngine`, with macOS voice processing never enabled. It reads the
+/// default input device, or the chosen one, set as the current device of the audio unit of the
+/// input node before the format is read.
 final class AVMicrophoneEngine: MicrophoneEngine, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var configurationObserver: NSObjectProtocol?
+    /// Why the chosen device could not be set: the engine then does not start.
+    private let deviceError: (any Error)?
+
+    /// `device` is the chosen input device, `nil` for the default one.
+    init(device: InputDevice? = nil) {
+        var failure: (any Error)?
+        if let device {
+            do {
+                try engine.inputNode.auAudioUnit.setDeviceID(device.id)
+            } catch {
+                failure = error
+            }
+        }
+        deviceError = failure
+    }
 
     var isVoiceProcessingEnabled: Bool { engine.inputNode.isVoiceProcessingEnabled }
 
@@ -43,6 +59,7 @@ final class AVMicrophoneEngine: MicrophoneEngine, @unchecked Sendable {
         format: AVAudioFormat, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
         onConfigurationChange: @escaping @Sendable () -> Void
     ) throws {
+        if let deviceError { throw deviceError }
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             deliver(buffer, ProcessInfo.processInfo.systemUptime)
         }

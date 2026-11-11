@@ -7,6 +7,7 @@ import Testing
 private final class FakePlayer: TrackPlayer {
     var duration: TimeInterval
     var currentTime: TimeInterval = 0
+    var speed: Double = 1
     private(set) var starts: [TimeInterval] = []
     private(set) var stops = 0
     private(set) var unloads = 0
@@ -61,7 +62,8 @@ struct PlaybackControllerTests {
 
     private func makeController(duration: TimeInterval = 60) -> (PlaybackController, FakePlayer) {
         let player = FakePlayer(duration: duration)
-        let controller = PlaybackController(makePlayer: { _ in player })
+        let options = PlaybackOptions(defaults: UserDefaults(suiteName: "LARPTests.\(UUID().uuidString)")!)
+        let controller = PlaybackController(options: options, makePlayer: { _ in player })
         return (controller, player)
     }
 

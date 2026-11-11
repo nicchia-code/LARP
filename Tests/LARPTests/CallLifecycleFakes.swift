@@ -62,6 +62,8 @@ final class FakeCapture: AudioCapturing {
         var startedFolders: [URL] = []
         var stopCount = 0
         var systemAudioPolicies: [SystemAudioPolicy] = []
+        var pausedStates: [Bool] = []
+        var microphoneChoiceChanges = 0
         var sink: (any AudioBufferSink)?
         var failure: (any Error)?
     }
@@ -73,6 +75,10 @@ final class FakeCapture: AudioCapturing {
     /// The `systemAudio` given to each start.
     var systemAudioPolicies: [SystemAudioPolicy] { state.withLock { $0.systemAudioPolicies } }
     var sink: (any AudioBufferSink)? { state.withLock { $0.sink } }
+    /// How many times the capture was told that the microphone choice changed.
+    var microphoneChoiceChanges: Int { state.withLock { $0.microphoneChoiceChanges } }
+    /// The values given to `setPaused`, in order.
+    var pausedStates: [Bool] { state.withLock { $0.pausedStates } }
 
     func failNextStart(with error: any Error) {
         state.withLock { $0.failure = error }
@@ -93,6 +99,14 @@ final class FakeCapture: AudioCapturing {
         }
     }
 
+    func microphoneChoiceChanged() {
+        state.withLock { $0.microphoneChoiceChanges += 1 }
+    }
+
+    func setPaused(_ paused: Bool) {
+        state.withLock { $0.pausedStates.append(paused) }
+    }
+
     func stop() async {
         state.withLock { $0.stopCount += 1 }
     }
@@ -108,10 +122,22 @@ final class FakeCaptureFailureAlerts: CaptureFailureAlertPresenting {
     }
 }
 
+/// An `ImportFailureAlertPresenting` that remembers the reasons it was shown.
+@MainActor
+final class FakeImportFailureAlerts: ImportFailureAlertPresenting {
+    private(set) var reasons: [String] = []
+
+    func present(reason: String) {
+        reasons.append(reason)
+    }
+}
+
 /// A live session the test feeds with lines.
 final class FakeLiveSession: LiveTranscriptionSession {
     let lines: AsyncStream<TranscribedLine>
+    let recognised: AsyncStream<RecognisedText>
     private let continuation: AsyncStream<TranscribedLine>.Continuation
+    private let recognisedContinuation: AsyncStream<RecognisedText>.Continuation
     private let completes: Bool
     private let consumed = Mutex<[AudioTrack]>([])
     private let cancelled = Mutex(false)
@@ -119,6 +145,7 @@ final class FakeLiveSession: LiveTranscriptionSession {
     /// - Parameter completes: what `finish()` answers: the whole recording was transcribed.
     init(completes: Bool = true) {
         (lines, continuation) = AsyncStream<TranscribedLine>.makeStream(bufferingPolicy: .unbounded)
+        (recognised, recognisedContinuation) = AsyncStream<RecognisedText>.makeStream(bufferingPolicy: .unbounded)
         self.completes = completes
     }
 
@@ -129,18 +156,25 @@ final class FakeLiveSession: LiveTranscriptionSession {
         continuation.yield(line)
     }
 
+    /// A volatile result: the text being recognised on a track.
+    func emitRecognised(_ text: RecognisedText) {
+        recognisedContinuation.yield(text)
+    }
+
     func consume(_ chunk: AudioChunk, track: AudioTrack) {
         consumed.withLock { $0.append(track) }
     }
 
     func finish() async -> Bool {
         continuation.finish()
+        recognisedContinuation.finish()
         return completes
     }
 
     func cancel() async {
         cancelled.withLock { $0 = true }
         continuation.finish()
+        recognisedContinuation.finish()
     }
 }
 
@@ -269,6 +303,13 @@ final class SummariesSwitch {
     init(_ isOn: Bool) { self.isOn = isOn }
 }
 
+/// The language chosen for the summaries, for `CallLifecycle.summaryLanguage`.
+@MainActor
+final class SummaryLanguageBox {
+    var choice: SummaryLanguageChoice
+    init(_ choice: SummaryLanguageChoice) { self.choice = choice }
+}
+
 /// A summary writer (the assistant asked for a summary) whose outcome is controlled by the test.
 final class FakeSummarizer: TranscriptRefining {
     enum Behavior: Sendable {
@@ -344,9 +385,12 @@ struct CallHarness {
     let capture = FakeCapture()
     let transcription = FakeTranscription()
     let captureAlerts = FakeCaptureFailureAlerts()
+    let importAlerts = FakeImportFailureAlerts()
+    let live = LiveRecordingState()
     let recorderEnds = RecorderEndCounter()
     let refinement: RefinementSwitch
     let summaries: SummariesSwitch
+    let summaryLanguage: SummaryLanguageBox
     let lifecycle: CallLifecycle
     private let clock: Clock
 
@@ -370,13 +414,17 @@ struct CallHarness {
         refinementOn: Bool = false,
         summarizer: (any TranscriptRefining)? = nil,
         summariesOn: Bool = false,
-        transcriptionRetryDelay: Duration = .seconds(3600)
+        summaryLanguage: SummaryLanguageChoice = .sameAsCall,
+        transcriptionRetryDelay: Duration = .seconds(3600),
+        speakerIdentificationOn: Bool = true
     ) throws {
         container = try ArchiveStore.makeContainer(inMemory: true)
         let refinement = RefinementSwitch(refinementOn)
         self.refinement = refinement
         let summaries = SummariesSwitch(summariesOn)
         self.summaries = summaries
+        let summaryLanguage = SummaryLanguageBox(summaryLanguage)
+        self.summaryLanguage = summaryLanguage
         languages = FakeLanguages(ready: readyLanguages)
         let clock = Clock(Date(timeIntervalSince1970: 1_800_000_000))
         self.clock = clock
@@ -394,8 +442,12 @@ struct CallHarness {
             refinementIsOn: { [refinement] in refinement.isOn },
             summarizer: summarizer,
             summariesAreOn: { [summaries] in summaries.isOn },
-            now: { clock.date }
+            summaryLanguage: { [summaryLanguage] in summaryLanguage.choice },
+            now: { clock.date },
+            live: live,
+            importFailureAlerts: importAlerts
         )
+        lifecycle.speakerIdentificationIsOn = { speakerIdentificationOn }
     }
 
     func advanceClock(by seconds: TimeInterval) {

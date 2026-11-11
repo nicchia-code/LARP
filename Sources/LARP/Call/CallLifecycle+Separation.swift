@@ -34,6 +34,14 @@ extension CallLifecycle {
 
     private func finishSeparation(callID: UUID, failed: Bool) {
         guard let call = call(id: callID), call.state == .separatingParticipants else { return }
+        // A separation that runs again leaves the waveform of an earlier one behind: the call becomes
+        // Ready with none, and gets a new one, coloured by the new participants. The participants
+        // take the names Teams marked as speaking before the call moves on, so that the refinement
+        // and the summary start with them (they never reach omp: the names are kept as typed ones).
+        if !failed {
+            call.waveform = nil
+            nameParticipantsFromTeams(of: call)
+        }
         apply(failed ? .separationFailed : .participantsSeparated(refinementOn: refinementIsOn()), to: call)
         // The summary starts alongside the refinement, never waiting for it.
         if !failed {

@@ -1,0 +1,27 @@
+{
+  "sourceLanguage" : "it",
+  "strings" : {
+    "NSAudioCaptureUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LARP records the system audio to capture the voice of the other participants in your calls. The audio stays on your Mac and is never sent to any external service." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "LARP registra l'audio di sistema per catturare la voce degli altri partecipanti alle call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno." } }
+      }
+    },
+    "NSCalendarsFullAccessUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LARP reads the calendar to name your recordings and to tell who was at the meeting. Calendar data stays on your Mac and is never sent to any external service." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "LARP legge il calendario per dare il nome alle registrazioni e indicare chi c'era alla riunione. I dati del calendario restano sul tuo Mac e non vengono mai inviati a nessun servizio esterno." } }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LARP uses the microphone to record your voice during calls. The audio stays on your Mac and is never sent to any external service." } },
+        "it" : { "stringUnit" : { "state" : "translated", "value" : "LARP usa il microfono per registrare la tua voce durante le call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno." } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

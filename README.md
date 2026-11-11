@@ -1,6 +1,6 @@
 # LARP
 
-A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Audio always stays on the Mac, and the app has no cloud service, account or telemetry of its own. The only optional exceptions are transcript refinement and call summaries, both off by default: they send the transcript text (never the audio) through omp, an optional external program that is not bundled with the app, to the model provider configured in omp. The interface is in Italian.
+A macOS menu bar app that records calls (microphone and system audio), transcribes them on the Mac and keeps an archive. Audio always stays on the Mac, and the app has no cloud service, account or telemetry of its own. The only optional exceptions are transcript refinement and call summaries, both off by default: they send the transcript text (never the audio) through omp, an optional external program that is not bundled with the app, to the model provider configured in omp. The interface is in Italian or English, following the language of the Mac (or the one chosen for LARP in System Settings); English when the Mac is in neither.
 
 Requirements: an Apple silicon Mac (M1 or later) with macOS 26 or later, and Xcode.
 
@@ -31,7 +31,7 @@ xcodebuild -project LARP.xcodeproj -scheme LARP -configuration Debug -derivedDat
 open build/Build/Products/Debug/LARP.app
 ```
 
-The app has no Dock icon: look for the microphone icon in the menu bar.
+The app has no Dock icon: look for the LARP mark (a small ink square with lime bars) in the menu bar; a click opens the popover.
 
 Builds are ad-hoc signed and not notarized. To sign with a personal team instead, set in `project.yml` `CODE_SIGN_STYLE: Automatic`, `CODE_SIGN_IDENTITY: "Apple Development"` and `DEVELOPMENT_TEAM: <team id>`. With a stable signature macOS keeps the microphone and system audio permissions across rebuilds.
 
@@ -83,27 +83,50 @@ Transcript refinement is off by default. When it is on, the text of the transcri
 
 Call summaries are optional, off by default ("Sintesi con omp" in the settings) and independent of transcript refinement: either can be on without the other.
 
+A summary has an opening sentence with its key part, the key concepts, the decisions (each with the time of the line where it was taken), the action items (with their owner and due as said in the call, tickable as done), what was left open and a free text. Its language is chosen in the settings ("Lingua della sintesi": "Come la call", "Italiano" or "English") and is stored with each summary; a new choice applies only to the summaries written after it. A new summary replaces the earlier one, and the ticks of the action items are lost.
+
+Questions and translations are optional too, off by default and independent of the other two ("Domande e traduzioni con omp" in the settings). With the switch on, a call page has the field "Chiedi qualcosa a questa call" under the summary and the link "Traduci" under the transcript. Each question and each translation runs in a process of omp of its own and sends the lines of the call as they are shown (refined or corrected text included) as "Io" or "Partecipante <numero>", never the audio, the title, the names given, the notes, the dates or the call app. Questions and answers, and the translation, live only while the page of the call stays open and are never stored. omp is looked for while at least one of the three switches is on.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request on a `macos-26` runner: it installs XcodeGen, generates the project, builds and runs the tests.
 
 LARP is built for Apple silicon (arm64) only, in Debug and Release, locally, in CI and in the release workflow. `project.yml` sets `ARCHS: arm64` for the app; the Swift Package Manager dependencies are separate projects, so the workflows also pass `ARCHS=arm64` to every `xcodebuild` invocation (WebRTCAudioProcessing contains only ARM sources and does not compile for `x86_64`). Pass it too when building a Release from the command line.
 
+## Languages, fonts and visual language
+
+Every text shown to the user exists in Italian (the development language) and English in one String Catalog, `Sources/LARP/Resources/Localizable.xcstrings`; the key of a text is its Italian wording, so a view writes `Text("Registra")` and a text built in code `L10n.string("Registra")`. When you add a text, add its English translation to the catalog (`Tests/LARPTests/InterfaceLanguageTests.swift` checks that every text has both). Dates, times and names follow the interface language (`AppLanguage.current`); stored data never changes with it.
+
+The fixed palette, the fonts, the text styles and the components of the Style Guide (buttons, chips, switches, cards, fields, avatars, eyebrows, shortcut keys, waveforms) live in `Sources/LARP/Design/` and are the only way views draw themselves: no view uses the system accent colour or the standard styles of buttons, switches, lists and forms. Inter, Bricolage Grotesque and JetBrains Mono are bundled as TTF files with their SIL Open Font License texts in `Sources/LARP/Resources/Fonts/` and registered when the app starts.
+
 ## Layout
 
 ```
 project.yml            XcodeGen project definition
 Config/                Info.plist and entitlements (generated by XcodeGen from project.yml)
-Sources/LARP/App/      App entry point, menu bar menu, archive window
-Sources/LARP/Model/    SwiftData archive (Call, TranscriptLine, Participant), paths, store
-Sources/LARP/Settings/ Settings scene and UserDefaults keys
+Sources/LARP/Design/        Visual language shared by every view: palette, fonts, text styles, components, LARP mark; interface language (`AppLanguage`, `L10n`)
+Sources/LARP/Resources/     Bundled fonts (Inter, Bricolage Grotesque, JetBrains Mono, with their OFL texts), app icon asset catalog, String Catalog `Localizable.xcstrings`
+Sources/LARP/App/           App entry point, menu bar icon and its popover
+Sources/LARP/MainWindow/    Main window (AppKit window, sidebar, page switch between library, call and settings)
+Sources/LARP/Archive/       Library cards (with the waveform strip), "Importa file audio", the "Azioni" and "Segnalibri" views, call page, transcript (editable in place) and summary views (ticks on the action items, decisions that play from their line), search, Markdown export
+Sources/LARP/Playback/      Playback of a call's audio, controls and transcript timeline (archive window)
+Sources/LARP/Call/          Call lifecycle: the call and call-summary machines and the work of each state, import of audio files, waveforms and line corrections, the Markdown file of each ready call in the folder the user chose
+Sources/LARP/Capture/       Call detection (recorder machine, with pause), known call apps, recording permissions, proposal and notice panels, the recording pill and the live window
+Sources/LARP/Recording/     Audio capture to disk: microphone (default or chosen input device, followed as devices change), system audio tap, echo cancellation, AAC/CAF writing, pause silence, track levels; conversion of an imported audio file into a track; block-wise peak measurement of the tracks for the waveform
+Sources/LARP/Transcription/ Speech-to-text of the microphone and system audio tracks
+Sources/LARP/Separation/    Telling the other participants apart by voice and assigning their lines
+Sources/LARP/Assistant/     omp: locating the program, the ACP client and the transcript refiner
+Sources/LARP/Refinement/    Request sent to omp to refine a transcript and the check of its answer
+Sources/LARP/Summary/       Request sent to omp to summarise a call and the check of its answer
+Sources/LARP/Settings/      Settings scene, welcome window shown at the first launch, UserDefaults keys, launch at login, network and language checks, the "Privacy e archivio" card (audio retention, location of the archive with "Mostra nel Finder"), choice of the Markdown folder
+Sources/LARP/Model/         SwiftData archive (Call, TranscriptLine, Participant, CallSummary), paths, store
 Packages/WebRTCAudioProcessing/  WebRTC audio processing module (echo canceller), built from source
 Tests/LARPTests/       Swift Testing tests (tag .requiresHardware = not run in CI)
 Tests/LARP.xctestplan  Test plan: skips the .requiresHardware tag
 .github/workflows/     CI (ci.yml) and release (release.yml) workflows
 ```
 
-Data lives in `~/Library/Application Support/LARP/`: the SwiftData store (`LARP.store`) and one `Recordings/<call id>/` folder per call with `mic.caf` and `system.caf`.
+Data lives in `~/Library/Application Support/LARP/`: the SwiftData store (`LARP.store`), which holds four kinds of records (calls, transcript lines, participants and call summaries); one `Recordings/<call id>/` folder per call with `mic.caf` and `system.caf`; and the `Models/` folder with the speaker separation models, downloaded on first use and reused.
 
 ## Dependencies
 

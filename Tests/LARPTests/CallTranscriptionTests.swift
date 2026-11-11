@@ -4,7 +4,7 @@ import Testing
 
 @testable import LARP
 
-@Suite("Call transcription from file", .serialized)
+@Suite("Call transcription from file", .serialized, .italianInterface)
 @MainActor
 struct CallTranscriptionTests {
     private static let mine = [

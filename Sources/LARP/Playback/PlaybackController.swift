@@ -21,6 +21,9 @@ final class PlaybackController {
         case paused
     }
 
+    /// The playback of the main window, which the global shortcut to add a bookmark also reads.
+    static let shared = PlaybackController()
+
     /// Creates the player for the audio files of a call.
     typealias PlayerFactory = @MainActor ([URL]) -> any TrackPlayer
 
@@ -33,6 +36,9 @@ final class PlaybackController {
     private(set) var currentLineIndex: Int?
     /// Whether the shown call has audio that can be played.
     private(set) var canPlay = false
+    /// The days of the audio retention in force when it deleted the audio of the shown call; `nil`
+    /// while the call has its audio.
+    private(set) var audioRemovedAfterDays: Int?
     /// The call whose audio is loaded.
     private(set) var callID: UUID?
 
@@ -41,11 +47,15 @@ final class PlaybackController {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     @ObservationIgnored private let makePlayer: PlayerFactory
     @ObservationIgnored private let tickInterval: Duration
+    /// The speed and the silence skipping, the same for every call.
+    let options: PlaybackOptions
 
     init(
+        options: PlaybackOptions = .shared,
         tickInterval: Duration = .milliseconds(100),
         makePlayer: @escaping PlayerFactory = { EngineTrackPlayer(urls: $0) }
     ) {
+        self.options = options
         self.tickInterval = tickInterval
         self.makePlayer = makePlayer
     }
@@ -63,11 +73,22 @@ final class PlaybackController {
             unload()
             callID = call.id
         }
+        audioRemovedAfterDays = call.audioRemovedAfterDays
+        if audioRemovedAfterDays != nil {
+            // The retention deleted the audio: what was loaded stops, and nothing is loaded again.
+            stop()
+            player?.unload()
+            player = nil
+            canPlay = false
+            duration = call.duration
+            return
+        }
         guard player == nil, call.state != .recording else {
             if player == nil { duration = call.duration }
             return
         }
         let player = makePlayer([call.micAudioURL, call.systemAudioURL])
+        player.speed = options.speed
         player.onInterrupted = { [weak self] time in self?.playbackInterrupted(at: time) }
         self.player = player
         canPlay = player.duration > 0
@@ -106,9 +127,25 @@ final class PlaybackController {
     }
 
     /// `user.SELECT_SENTENCE`: from any state, Playing from the start of the sentence.
+    /// Does nothing when the call has no audio to play (`canPlay` is false: no readable track,
+    /// or the call is still being recorded).
     func play(fromSentenceStart time: TimeInterval) {
         guard canPlay else { return }
         start(at: time)
+    }
+
+    /// `user.SELECT_BOOKMARK`: from any state, Playing from the time of the bookmark. When the call
+    /// of the bookmark is not the one loaded, its audio is loaded first. Does nothing when the call
+    /// has no audio to play.
+    func selectBookmark(at time: TimeInterval, of call: Call) {
+        show(call)
+        play(fromSentenceStart: time)
+    }
+
+    /// `user.SELECT_DECISION`: from any state, Playing from the start of the line where the decision was
+    /// taken, in the call whose audio is loaded. Does nothing when the call has no audio to play.
+    func selectDecision(lineStart time: TimeInterval) {
+        play(fromSentenceStart: time)
     }
 
     /// Moves the playhead with the progress bar: Playing keeps playing from `time`,
@@ -124,6 +161,12 @@ final class PlaybackController {
             currentTime = time
             currentLineIndex = timeline.lineIndex(at: time)
         }
+    }
+
+    /// `user.CHANGE_SPEED`: the next speed is saved and applies at once, also to audio playing.
+    func changeSpeed() {
+        options.changeSpeed()
+        player?.speed = options.speed
     }
 
     /// `user.CLOSE_WINDOW`, and the way out of every state: → Stopped.
@@ -173,6 +216,7 @@ final class PlaybackController {
         player = nil
         callID = nil
         canPlay = false
+        audioRemovedAfterDays = nil
         duration = 0
         timeline = .empty
     }
@@ -199,5 +243,12 @@ final class PlaybackController {
         currentTime = time
         let index = timeline.lineIndex(at: time)
         if index != currentLineIndex { currentLineIndex = index }
+        guard options.skipSilence else { return }
+        // Skipping a silence is a seek, or the end of the audio when no line is left.
+        switch timeline.silenceSkip(at: time, duration: duration) {
+        case .seek(let target): seek(to: target)
+        case .end: playbackEnded()
+        case nil: break
+        }
     }
 }

@@ -10,9 +10,10 @@ import Synchronization
 struct CoreAudioSystemDriver: SystemAudioDriver {
     func startCapture(
         deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
-        onChange: @escaping @Sendable () -> Void
-    ) throws -> any SystemAudioHandle {
-        let capture = CoreAudioSystemCapture(deliver: deliver, onChange: onChange)
+        onChange: @escaping @Sendable () -> Void,
+        drops: BufferDrops
+    ) throws -> any SystemAudioRun {
+        let capture = CoreAudioSystemCapture(deliver: deliver, onChange: onChange, drops: drops)
         do {
             try capture.start()
         } catch {
@@ -46,9 +47,12 @@ private final class PropertyListeners: SystemAudioHandle, @unchecked Sendable {
         block = { _, _ in handler() }
     }
 
-    func add(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) {
+    func add(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) {
         var address = AudioObjectPropertyAddress(
-            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
         guard AudioObjectAddPropertyListenerBlock(object, &address, queue, block) == noErr else { return }
         registered.append((object, address))
     }
@@ -65,10 +69,11 @@ private final class PropertyListeners: SystemAudioHandle, @unchecked Sendable {
 // MARK: - Capture
 
 /// One run of the capture on one output device: the tap, the aggregate device and the
-/// I/O proc, with the format of the tap read once for all its buffers. It is not
-/// changed afterwards: a change of the output or of its format ends it (`onChange`) and
-/// the next one is built from scratch.
-private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendable {
+/// I/O proc. It is not changed afterwards: a change of the output or of its format ends
+/// it (`onChange`) and the next one is built from scratch. Every buffer is labelled with
+/// the format of the tap's stream in the aggregate device, read once the aggregate
+/// device has started.
+private final class CoreAudioSystemCapture: SystemAudioRun, @unchecked Sendable {
     /// What the capture depends on; a listener compares it with the one of the start, so
     /// that a notification that changes nothing does not restart the capture.
     private struct Signature: Equatable {
@@ -79,6 +84,21 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         var subDevices: [AudioObjectID]?
         var tapRate: Float64?
         var tapChannels: UInt32?
+        /// The tap's own stream among the input streams of the aggregate device.
+        var tapStream: TapStreamKey?
+    }
+
+    private struct TapStreamKey: Equatable {
+        var index: Int
+        var streamCount: Int
+        var format: StreamFormatKey
+    }
+
+    private struct TapStream {
+        var object: AudioObjectID
+        var index: Int
+        var streamCount: Int
+        var description: AudioStreamBasicDescription
     }
 
     private struct Devices {
@@ -90,6 +110,27 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
     private struct State {
         var devices: Devices?
         var signature: Signature?
+        /// The format of the tap's stream that labels the buffers.
+        var label: StreamFormatKey?
+    }
+
+    /// The label of a run, read by the I/O thread without taking a lock: it is written
+    /// once, then published.
+    private final class RunLabel: @unchecked Sendable {
+        private let ready = Atomic<Bool>(false)
+        private var format: AVAudioFormat?
+        private var index = 0
+
+        func publish(format: AVAudioFormat, index: Int) {
+            self.format = format
+            self.index = index
+            ready.store(true, ordering: .releasing)
+        }
+
+        var value: (AVAudioFormat, Int)? {
+            guard ready.load(ordering: .acquiring), let format else { return nil }
+            return (format, index)
+        }
     }
 
     /// Set when the capture ended or no longer follows the output: its buffers are
@@ -100,6 +141,7 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
 
     private let deliver: @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void
     private let onChange: @Sendable () -> Void
+    private let drops: BufferDrops
     private let stale = Stale()
     private let state = Mutex(State())
     private let ioQueue = DispatchQueue(label: "com.larp.LARP.systemTap", qos: .userInteractive)
@@ -109,22 +151,30 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private let tapUUID = UUID()
+    /// The format that labels the buffers of this run and the place of the tap's stream
+    /// in the input list; set once the aggregate device has started.
+    private let label = RunLabel()
+    /// What the capture reads: set by `start()`, before the capture is handed over.
+    private(set) var formats = SystemAudioFormats(reported: nil, stream: AudioFormats.storage)
 
     init(
-        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void
+        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void,
+        drops: BufferDrops
     ) {
         self.deliver = deliver
         self.onChange = onChange
+        self.drops = drops
     }
 
     func start() throws {
         try createTap()
         let output = try Self.defaultOutputDevice()
         try createAggregateDevice(outputUID: Self.deviceUID(output))
-        state.withLock { $0.devices = Devices(tap: tapID, output: output, aggregate: aggregateID) }
+        let devices = Devices(tap: tapID, output: output, aggregate: aggregateID)
+        state.withLock { $0.devices = devices }
 
-        // The listeners come before the format is read: a change that happens from now on
-        // (Bluetooth headphones switching to their call mode) is followed.
+        // The listeners come before the aggregate device starts: a change that happens from
+        // now on (Bluetooth headphones switching to their call mode) is followed.
         let listeners = PropertyListeners(label: "com.larp.LARP.systemTap.listeners") { [weak self] in
             self?.propertiesChanged()
         }
@@ -135,12 +185,25 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         listeners.add(output, kAudioDevicePropertyDeviceIsAlive)
         listeners.add(aggregateID, kAudioDevicePropertyNominalSampleRate)
         listeners.add(aggregateID, kAudioAggregateDevicePropertyActiveSubDeviceList)
+        listeners.add(aggregateID, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)
         listeners.add(tapID, kAudioTapPropertyFormat)
 
-        let format = try readTapFormat()
-        state.withLock { $0.signature = Self.signature(of: Devices(tap: tapID, output: output, aggregate: aggregateID)) }
-        try startIO(format: format)
-        // What changed between the first listener and the signature is not reported.
+        try startIO()
+
+        // The format that labels every buffer is the one of the tap's stream, read now that
+        // the aggregate device runs, at the rate it really runs at.
+        guard var tapStream = Self.tapStream(of: aggregateID),
+            let label = AVAudioFormat(streamDescription: &tapStream.description)
+        else { throw SystemAudioTap.TapError(operation: "find tap stream", status: kAudio_ParamError) }
+        listeners.add(tapStream.object, kAudioStreamPropertyVirtualFormat)
+        formats = SystemAudioFormats(reported: readTapFormat(), stream: label)
+        state.withLock {
+            $0.signature = Self.signature(of: devices, tapStream: tapStream)
+            $0.label = StreamFormatKey(tapStream.description)
+        }
+        self.label.publish(format: label, index: tapStream.index)
+        // What changed while the capture was being set up is not reported by the listeners:
+        // the first check compares the devices as they are now with the signature.
         listeners.queue.async { [self] in propertiesChanged() }
     }
 
@@ -168,25 +231,34 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
 
     /// On a Core Audio queue. Tells once that the capture no longer follows the output.
     private func propertiesChanged() {
-        let snapshot = state.withLock { state -> (Devices, Signature)? in
-            guard let devices = state.devices, let signature = state.signature else { return nil }
-            return (devices, signature)
+        let snapshot = state.withLock { state -> (Devices, Signature, StreamFormatKey)? in
+            guard let devices = state.devices, let signature = state.signature, let label = state.label else { return nil }
+            return (devices, signature, label)
         }
-        guard let (devices, expected) = snapshot, !stale.value.load(ordering: .relaxed) else { return }
-        guard Self.signature(of: devices) != expected else { return }
+        guard let (devices, expected, label) = snapshot, !stale.value.load(ordering: .relaxed) else { return }
+        let tapStream = Self.tapStream(of: devices.aggregate)
+        // Something it depends on changed, or the tap's stream no longer runs in the format
+        // that labels the buffers.
+        let followsLabel = tapStream.map { StreamFormatKey($0.description) == label } ?? false
+        guard Self.signature(of: devices, tapStream: tapStream) != expected || !followsLabel else { return }
         guard !stale.value.exchange(true, ordering: .sequentiallyConsistent) else { return }
         onChange()
     }
 
-    private static func signature(of devices: Devices) -> Signature {
-        Signature(
+    /// The tap's stream and everything else the capture depends on.
+    private static func signature(of devices: Devices, tapStream: TapStream?) -> Signature {
+        let reported = tapFormat(devices.tap)
+        return Signature(
             defaultOutput: try? defaultOutputDevice(),
             outputRate: property(devices.output, kAudioDevicePropertyNominalSampleRate, initial: Float64(0)),
             outputIsAlive: property(devices.output, kAudioDevicePropertyDeviceIsAlive, initial: UInt32(0)),
             aggregateRate: property(devices.aggregate, kAudioDevicePropertyNominalSampleRate, initial: Float64(0)),
             subDevices: objectIDs(devices.aggregate, kAudioAggregateDevicePropertyActiveSubDeviceList),
-            tapRate: tapFormat(devices.tap)?.mSampleRate,
-            tapChannels: tapFormat(devices.tap)?.mChannelsPerFrame)
+            tapRate: reported?.mSampleRate,
+            tapChannels: reported?.mChannelsPerFrame,
+            tapStream: tapStream.map {
+                TapStreamKey(index: $0.index, streamCount: $0.streamCount, format: StreamFormatKey($0.description))
+            })
     }
 
     // MARK: - Setup
@@ -203,6 +275,9 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         description.muteBehavior = .unmuted
         description.isPrivate = true
         try Self.check(AudioHardwareCreateProcessTap(description, &tapID), SystemAudioTap.TapError.createTapOperation)
+        // The tap exists, so the permission is granted: automatic recording can rely on it for the
+        // rest of this launch of the app.
+        SystemAudioGrantMemory.shared.remember()
     }
 
     private func createAggregateDevice(outputUID: String) throws {
@@ -225,26 +300,48 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
             AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID), "create aggregate device")
     }
 
-    private func readTapFormat() throws -> AVAudioFormat {
-        guard var streamDescription = Self.tapFormat(tapID) else {
-            throw SystemAudioTap.TapError(operation: "read tap format", status: kAudio_ParamError)
-        }
-        guard let format = AVAudioFormat(streamDescription: &streamDescription) else {
-            throw SystemAudioTap.TapError(operation: "tap format", status: kAudio_ParamError)
-        }
-        return format
+    /// The format the tap reports for itself. Only informational (diagnostic log and the
+    /// signature): the buffers are never labelled with it, because the tap's stream in the
+    /// aggregate device can run at another rate.
+    private func readTapFormat() -> AVAudioFormat? {
+        guard var streamDescription = Self.tapFormat(tapID) else { return nil }
+        return AVAudioFormat(streamDescription: &streamDescription)
     }
 
-    /// Every buffer is labelled with `format`, the one of the tap read for this run.
-    private func startIO(format: AVAudioFormat) throws {
+    /// Creates the I/O proc and starts the aggregate device. The buffers are dropped until
+    /// the format of the tap's stream is read, which needs the aggregate device running.
+    private func startIO() throws {
         try Self.check(
-            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, ioQueue) { [deliver, stale] _, input, _, _, _ in
-                guard !stale.value.load(ordering: .relaxed),
-                    let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: input, deallocator: nil)
-                else { return }
-                deliver(buffer, ProcessInfo.processInfo.systemUptime)
+            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, ioQueue) { [deliver, stale, label, drops] _, input, _, _, _ in
+                guard !stale.value.load(ordering: .relaxed) else {
+                    drops.record(.endedRun)
+                    return
+                }
+                // Before the format of the tap's stream is read nothing is known about the buffer:
+                // it is not counted as unreadable, which is for a stream that cannot be read.
+                guard let (format, index) = label.value else { return }
+                let read = TapInputStreams.withBuffer(in: input, at: index, format: format) { buffer in
+                    deliver(buffer, ProcessInfo.processInfo.systemUptime)
+                }
+                if !read { drops.record(.unreadable) }
             }, "create IO proc")
         try Self.check(AudioDeviceStart(aggregateID, ioProcID), "start aggregate device")
+    }
+
+    /// The tap's own stream among the input streams of the aggregate device: it comes after
+    /// the input streams of the sub-devices (a headset in its call mode adds its microphone
+    /// there), so it is found by its place, never as the first one.
+    private static func tapStream(of aggregate: AudioObjectID) -> TapStream? {
+        guard let streams = objectIDs(aggregate, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput),
+            let subDevices = objectIDs(aggregate, kAudioAggregateDevicePropertyActiveSubDeviceList)
+        else { return nil }
+        let subDeviceStreams = subDevices.reduce(0) {
+            $0 + (objectIDs($1, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)?.count ?? 0)
+        }
+        guard let index = TapInputStreams.index(subDeviceInputStreams: subDeviceStreams, inputStreams: streams.count),
+            let description = property(streams[index], kAudioStreamPropertyVirtualFormat, initial: AudioStreamBasicDescription())
+        else { return nil }
+        return TapStream(object: streams[index], index: index, streamCount: streams.count, description: description)
     }
 
     // MARK: - Core Audio helpers
@@ -253,9 +350,10 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         guard status == noErr else { throw SystemAudioTap.TapError(operation: operation, status: status) }
     }
 
-    private static func globalAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    private static func globalAddress(
+        _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
 
     /// A fixed-size property, or `nil` when the object does not answer (it is gone).
@@ -267,8 +365,11 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         return value
     }
 
-    private static func objectIDs(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> [AudioObjectID]? {
-        var address = globalAddress(selector)
+    private static func objectIDs(
+        _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> [AudioObjectID]? {
+        var address = globalAddress(selector, scope: scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return nil }
         var ids = [AudioObjectID](repeating: AudioObjectID(kAudioObjectUnknown), count: Int(size) / MemoryLayout<AudioObjectID>.size)
@@ -308,5 +409,56 @@ private final class CoreAudioSystemCapture: SystemAudioHandle, @unchecked Sendab
         try check(AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid), "output device UID")
         guard let uid else { throw SystemAudioTap.TapError(operation: "output device UID", status: kAudio_ParamError) }
         return uid.takeRetainedValue() as String
+    }
+}
+
+// MARK: - The tap's stream in the aggregate device
+
+/// The part of a stream format that tells whether audio is read as it arrives.
+private struct StreamFormatKey: Equatable {
+    var sampleRate: Float64
+    var channels: UInt32
+    var formatID: AudioFormatID
+    var formatFlags: AudioFormatFlags
+    var bitsPerChannel: UInt32
+
+    init(_ description: AudioStreamBasicDescription) {
+        sampleRate = description.mSampleRate
+        channels = description.mChannelsPerFrame
+        formatID = description.mFormatID
+        formatFlags = description.mFormatFlags
+        bitsPerChannel = description.mBitsPerChannel
+    }
+}
+
+/// The input list of the aggregate device holds one buffer per input stream: first the
+/// streams of its sub-devices (a headset in its call mode adds its own microphone stream
+/// there), then the stream of the tap.
+enum TapInputStreams {
+    /// The place of the tap's stream among `inputStreams` input streams, of which
+    /// `subDeviceInputStreams` belong to the sub-devices; `nil` when none is left for the
+    /// tap, which then cannot be found.
+    static func index(subDeviceInputStreams: Int, inputStreams: Int) -> Int? {
+        let index = inputStreams - 1
+        return index >= subDeviceInputStreams && index >= 0 ? index : nil
+    }
+
+    /// Calls `body` with the buffer at `index` of `list` as a buffer in `format`, valid
+    /// only during the call, and no other buffer of the list; `false` (and `body` not
+    /// called) when the list has no such buffer or it cannot be read in `format`.
+    @discardableResult
+    static func withBuffer(
+        in list: UnsafePointer<AudioBufferList>, at index: Int, format: AVAudioFormat, _ body: (AVAudioPCMBuffer) -> Void
+    ) -> Bool {
+        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
+        guard index >= 0, index < buffers.count else { return false }
+        var single = AudioBufferList(mNumberBuffers: 1, mBuffers: buffers[index])
+        return withUnsafePointer(to: &single) { pointer in
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: pointer, deallocator: nil) else {
+                return false
+            }
+            body(buffer)
+            return true
+        }
     }
 }

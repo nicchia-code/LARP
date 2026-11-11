@@ -65,10 +65,31 @@ final class CallLifecycle {
     @ObservationIgnored let summarizer: (any TranscriptRefining)?
     /// Whether call summaries are on.
     @ObservationIgnored let summariesAreOn: @MainActor () -> Bool
+    /// The language chosen for the summaries, read when a summary starts.
+    @ObservationIgnored let summaryLanguage: @MainActor () -> SummaryLanguageChoice
     @ObservationIgnored let now: @Sendable () -> Date
+    /// What the pill and the live window show of the recording in progress.
+    @ObservationIgnored let live: LiveRecordingState
+    /// News of the events of a call that its file in the Markdown folder follows.
+    @ObservationIgnored let callChanges = EventBroadcaster<CallChange>()
+    /// Tells the user that an audio file could not be imported.
+    @ObservationIgnored let importFailureAlerts: any ImportFailureAlertPresenting
 
     // Recording (see CallLifecycle+Recording)
     @ObservationIgnored var activeRecording: ActiveRecording?
+    /// The timeline of Teams speakers of the call being recorded (see `CallLifecycle+Meeting`).
+    @ObservationIgnored var speakerTimeline = SpeakerTimelineBuilder()
+    /// The meeting Teams shows now, read when a recording starts so that a recording that begins
+    /// in a meeting already has its title, its people and its speaker. Wired by the app; absent
+    /// means Teams shows nothing.
+    @ObservationIgnored var teamsMeeting: @MainActor () -> TeamsReadout.Meeting? = { nil }
+    /// The calendar event in progress, read when a recording starts: its title is the meeting title
+    /// of a call whose Teams shows none, and its invited people are names for the participants.
+    /// Wired by the app; absent means no event (the calendar is not connected or has none).
+    @ObservationIgnored var calendarMeeting: @MainActor () -> CalendarMeeting? = { nil }
+    /// Whether "Identifica i parlanti" is on: names from Teams are given to the participants after
+    /// the separation, and offered when a participant is renamed. Wired by the app.
+    @ObservationIgnored var speakerIdentificationIsOn: @MainActor () -> Bool = { true }
 
     // Transcription from the saved audio (see CallLifecycle+Transcription)
     @ObservationIgnored var transcriptionWorker: Task<Void, Never>?
@@ -91,6 +112,21 @@ final class CallLifecycle {
     @ObservationIgnored var runningSummaries: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
     @ObservationIgnored var summaryCounter = 0
 
+    // Waveforms of calls (see CallLifecycle+Waveform)
+    @ObservationIgnored var runningWaveforms: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored var waveformCounter = 0
+    @ObservationIgnored var waveformBackfill: Task<Void, Never>?
+
+    // Audio retention (see CallLifecycle+Retention)
+    /// The days the audio of a call is kept, `nil` for always. Wired by the app; absent means always.
+    @ObservationIgnored var audioRetentionDays: @MainActor () -> Int? = { nil }
+    /// Deletes the audio files of a call, off the main actor.
+    @ObservationIgnored var audioRemover: any AudioFileRemoving = ArchiveAudioRemover()
+    /// How long the app waits between two checks of the audio retention.
+    @ObservationIgnored var audioRetentionInterval: Duration = .seconds(3600)
+    /// The check running or last started: the next one waits for it, so none is lost.
+    @ObservationIgnored var audioRetentionCheck: Task<Void, Never>?
+
     @ObservationIgnored private var eventTasks: [Task<Void, Never>] = []
 
     init(
@@ -107,7 +143,10 @@ final class CallLifecycle {
         refinementIsOn: @escaping @MainActor () -> Bool = { false },
         summarizer: (any TranscriptRefining)? = nil,
         summariesAreOn: @escaping @MainActor () -> Bool = { false },
-        now: @escaping @Sendable () -> Date = { Date() }
+        summaryLanguage: @escaping @MainActor () -> SummaryLanguageChoice = { .default },
+        now: @escaping @Sendable () -> Date = { Date() },
+        live: LiveRecordingState = LiveRecordingState(),
+        importFailureAlerts: any ImportFailureAlertPresenting = ImportFailureAlertPresenter()
     ) {
         self.container = container
         self.context = container.mainContext
@@ -123,7 +162,10 @@ final class CallLifecycle {
         self.refinementIsOn = refinementIsOn
         self.summarizer = summarizer
         self.summariesAreOn = summariesAreOn
+        self.summaryLanguage = summaryLanguage
         self.now = now
+        self.live = live
+        self.importFailureAlerts = importFailureAlerts
     }
 
     // MARK: - Running
@@ -150,13 +192,25 @@ final class CallLifecycle {
                     self.languageReady(language)
                 }
             },
+            // `time.AUDIO_RETENTION_CHECK_DUE`: every hour while the app is open.
+            Task {
+                await launch.value
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: self.audioRetentionInterval)
+                    guard !Task.isCancelled else { return }
+                    await self.checkAudioRetention()
+                }
+            },
         ]
     }
 
-    /// `recorder.RECORDING_STARTED` and `recorder.RECORDING_STOPPED`.
+    /// `recorder.RECORDING_STARTED`, `recorder.RECORDING_STOPPED`, `user.PAUSE_RECORDING` and
+    /// `user.RESUME_RECORDING`.
     func handle(_ event: RecorderEvent) async {
         switch event {
         case .started(let callAppName): await recordingStarted(callAppName: callAppName)
+        case .paused: recordingPaused(true)
+        case .resumed: recordingPaused(false)
         case .stopped: await recordingStopped()
         }
     }
@@ -176,6 +230,11 @@ final class CallLifecycle {
         for call in calls(summaryIn: [.writing, .awaitingRetry]) {
             applySummary(.appLaunched, to: call)
         }
+        // Last: once every other work of the launch has started, the calls of an earlier version get
+        // their waveform in the background.
+        startWaveformBackfill()
+        // And after that, the audio of the calls kept for too long is deleted.
+        await checkAudioRetention()
     }
 
     /// `transcription-language.LANGUAGE_READY`: the calls that wait for `language`
@@ -196,9 +255,13 @@ final class CallLifecycle {
         guard let target = CallStateMachine.target(from: call.state, on: event) else { return nil }
         switch target {
         case .state(let state):
+            let previous = call.state
             call.state = state
             save()
             enter(state, call: call)
+            // The waveform is worked out once, when the call becomes ready.
+            if state == .ready, previous != .ready { startWaveform(of: call) }
+            if state == .ready { callChanges.emit(.becameReady(call.id)) }
         case .deleted:
             delete(call)
         }
@@ -206,7 +269,7 @@ final class CallLifecycle {
     }
 
     /// What a state does when the call enters it.
-    private func enter(_ state: CallState, call: Call) {
+    func enter(_ state: CallState, call: Call) {
         switch state {
         case .transcribing:
             scheduleTranscription()
@@ -236,6 +299,7 @@ final class CallLifecycle {
         guard canRename(call) else { return }
         call.title = Call.normalizedName(title)
         save()
+        callChanges.emit(.renamed(call.id))
     }
 
     /// `user.RENAME_PARTICIPANT`: the participant takes the new name everywhere in
@@ -247,6 +311,7 @@ final class CallLifecycle {
         else { return }
         participant.name = Call.normalizedName(name)
         save()
+        callChanges.emit(.exportChanged(call.id))
     }
 
     /// `user.DELETE_CALL`, after the user confirmed: stops the transcription or the
@@ -267,6 +332,8 @@ final class CallLifecycle {
         cancelSeparation(of: id)
         cancelRefinement(of: id)
         cancelSummary(of: id)
+        cancelWaveform(of: id)
+        let markdownFileName = call.markdownFileName
         do {
             try ArchiveStore.delete(call, in: context)
         } catch {
@@ -274,6 +341,7 @@ final class CallLifecycle {
             return
         }
         NotificationCenter.default.post(name: .callDeleted, object: self, userInfo: ["callID": id])
+        callChanges.emit(.deleted(id, markdownFileName: markdownFileName))
     }
 
     // MARK: - Store

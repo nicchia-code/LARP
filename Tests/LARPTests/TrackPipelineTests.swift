@@ -63,7 +63,7 @@ struct TrackPipelineTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let sink = CollectingSink()
-        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: sink)
+        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: sink, startUptime: 100)
 
         // One second of audio that ends at uptime 101: the track starts at uptime 100.
         pipeline.ingest(borrowing: try buffer(seconds: 1), arrival: 101)
@@ -80,7 +80,7 @@ struct TrackPipelineTests {
         let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil)
+        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil, startUptime: 100)
 
         pipeline.ingest(borrowing: try buffer(seconds: 1), arrival: 101)
         await pipeline.finish()
@@ -94,7 +94,7 @@ struct TrackPipelineTests {
         let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil)
+        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil, startUptime: 100)
 
         pipeline.ingest(borrowing: try buffer(seconds: 1), arrival: 101)
         await pipeline.finish(silenceUntil: 100 + 95)
@@ -108,7 +108,7 @@ struct TrackPipelineTests {
         let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil)
+        let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil, startUptime: 100)
 
         pipeline.ingest(borrowing: try buffer(seconds: 1), arrival: 101)
         // Lost from uptime 101 to 105, then one more second of audio.
@@ -117,5 +117,61 @@ struct TrackPipelineTests {
 
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: folder)))
         #expect(abs(seconds - 6) < 0.2)
+    }
+
+    @Test("the first audio arrives a few seconds after the start of the recording: the track still starts with it")
+    func firstAudioArrivesLate() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let sink = CollectingSink()
+        let pipeline = try TrackPipeline(track: .system, folder: folder, sink: sink, startUptime: 100)
+
+        // The recording starts at uptime 100; one second of audio ends at uptime 106.
+        pipeline.ingest(borrowing: try buffer(seconds: 1), arrival: 106)
+        let stats = await pipeline.finish(silenceUntil: 106)
+
+        let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: folder)))
+        #expect(abs(seconds - 6) < 0.2)
+        #expect(abs(sink.frameCount - 96_000) < 3_200)
+        #expect(abs(stats.audioSeconds - 1) < 0.01)
+        #expect(abs(stats.silenceSeconds - 5) < 0.2)
+    }
+
+    @Test("a source that stopped delivering without being lost and a source that still runs both reach the end of the recording")
+    func everyTrackReachesTheEnd() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let stopped = try TrackPipeline(track: .system, folder: folder, sink: nil, startUptime: 100)
+        let running = try TrackPipeline(track: .microphone, folder: folder, sink: nil, startUptime: 100)
+
+        // Audio up to uptime 102 in both tracks, then the first one delivers nothing any more; the
+        // second one delivers up to 107. The recording stops at uptime 110.
+        stopped.ingest(borrowing: try buffer(seconds: 2), arrival: 102)
+        running.ingest(borrowing: try buffer(seconds: 2), arrival: 102)
+        for second in 103...107 {
+            running.ingest(borrowing: try buffer(seconds: 1), arrival: TimeInterval(second))
+        }
+        await stopped.finish(silenceUntil: 110)
+        await running.finish(silenceUntil: 110)
+
+        for track in [AudioTrack.system, .microphone] {
+            let seconds = try #require(AudioFileDuration.seconds(of: track.fileURL(in: folder)))
+            #expect(abs(seconds - 10) < 0.2, "\(track.fileName) lasts \(seconds) s, the recording 10 s")
+        }
+    }
+
+    @Test("a track that never received audio and is not asked to be filled stays empty")
+    func neverStartedStaysEmpty() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "larp-track-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let pipeline = try TrackPipeline(track: .system, folder: folder, sink: nil, startUptime: 100)
+
+        let stats = await pipeline.finish()
+
+        #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: folder)) == nil)
+        #expect(stats == TrackStats())
     }
 }

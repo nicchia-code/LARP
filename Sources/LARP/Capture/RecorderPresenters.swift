@@ -4,8 +4,9 @@ import SwiftUI
 /// Shows and hides the proposal to record. Replaced in tests.
 @MainActor
 protocol ProposalPresenting: AnyObject {
-    /// Shows the proposal for the call app; `accept` runs when the user taps "Registra".
-    func show(appName: String, accept: @escaping @MainActor () -> Void)
+    /// Shows the proposal for the call app; `accept` runs when the user taps "Registra questa call",
+    /// `dismiss` when the user taps "Non questa".
+    func show(appName: String, accept: @escaping @MainActor () -> Void, dismiss: @escaping @MainActor () -> Void)
     func hide()
 }
 
@@ -24,8 +25,8 @@ final class PermissionAlertPresenter: PermissionAlertPresenting {
         alert.alertStyle = .warning
         alert.messageText = permission.alertTitle
         alert.informativeText = permission.alertMessage
-        alert.addButton(withTitle: "Apri Impostazioni di Sistema")
-        alert.addButton(withTitle: "Annulla")
+        alert.addButton(withTitle: L10n.string("Apri Impostazioni di Sistema"))
+        alert.addButton(withTitle: L10n.string("Annulla"))
         NSApp.activate()
         if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.open(permission.settingsURL)
@@ -37,7 +38,7 @@ final class PermissionAlertPresenter: PermissionAlertPresenting {
 /// Replaced in tests.
 @MainActor
 protocol CaptureFailureAlertPresenting: AnyObject {
-    /// `reason` says why, in Italian, in a sentence the user can read.
+    /// `reason` says why, in the language of the interface, in a sentence the user can read.
     func present(reason: String)
 }
 
@@ -47,9 +48,10 @@ final class CaptureFailureAlertPresenter: CaptureFailureAlertPresenting {
     func present(reason: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Registrazione non partita"
-        alert.informativeText = "LARP non è riuscito ad avviare la cattura dell'audio: la registrazione non è stata salvata.\n\n\(reason)"
-        alert.addButton(withTitle: "OK")
+        alert.messageText = L10n.string("Registrazione non partita")
+        alert.informativeText = L10n.format(
+            "LARP non è riuscito ad avviare la cattura dell'audio: la registrazione non è stata salvata.\n\n%@", reason)
+        alert.addButton(withTitle: L10n.string("OK"))
         NSApp.activate()
         alert.runModal()
     }
@@ -96,9 +98,22 @@ protocol SystemAudioLostPresenting: AnyObject {
 final class ProposalPanelController: ProposalPresenting {
     private var panel: NSPanel?
 
-    func show(appName: String, accept: @escaping @MainActor () -> Void) {
+    func show(appName: String, accept: @escaping @MainActor () -> Void, dismiss: @escaping @MainActor () -> Void) {
         hide()
-        panel = MenuBarPanel.show(ProposalView(appName: appName, accept: accept))
+        panel = MenuBarPanel.show(
+            ProposalView(
+                appName: appName, accept: accept, dismiss: dismiss,
+                resize: { [weak self] in self?.resize($0) }))
+    }
+
+    /// The card grew or shrank (Teams gave a title or a number of people): the panel follows, its
+    /// top staying under the menu bar icon.
+    private func resize(_ size: CGSize) {
+        guard let panel, panel.frame.size != size else { return }
+        let frame = panel.frame
+        panel.setFrame(
+            NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height),
+            display: true)
     }
 
     func hide() {
@@ -113,14 +128,16 @@ final class ProposalPanelController: ProposalPresenting {
 final class EchoCancellationWarningPanelController: EchoCancellationWarningPresenting {
     /// How long the warning stays on screen.
     static let duration: Duration = .seconds(10)
-    static let message = "Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte."
+    static var message: String {
+        L10n.string("Cancellazione dell'eco non disponibile: usa le cuffie per non sentire gli altri due volte.")
+    }
 
     private var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
 
     func show() {
         hide()
-        panel = MenuBarPanel.show(EchoCancellationWarningView(message: Self.message))
+        panel = MenuBarPanel.show(NoticeView(symbol: "headphones", message: Self.message))
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: Self.duration)
             guard !Task.isCancelled else { return }
@@ -142,7 +159,7 @@ final class EchoCancellationWarningPanelController: EchoCancellationWarningPrese
 final class SystemAudioUnavailablePanelController: SystemAudioUnavailablePresenting {
     /// How long the notice stays on screen.
     static let duration: Duration = .seconds(10)
-    static let message = "Audio di sistema non disponibile: si registra solo il microfono."
+    static var message: String { L10n.string("Audio di sistema non disponibile: si registra solo il microfono.") }
 
     private var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
@@ -154,7 +171,8 @@ final class SystemAudioUnavailablePanelController: SystemAudioUnavailablePresent
             openSettings = { NSWorkspace.shared.open(RecordingPermission.systemAudio.settingsURL) }
         }
         panel = MenuBarPanel.show(
-            NoticeView(symbol: "speaker.slash", message: Self.message, buttonTitle: "Apri Impostazioni di Sistema", action: openSettings))
+            NoticeView(
+                symbol: "speaker.slash", message: Self.message, buttonTitle: "Apri Impostazioni di Sistema", action: openSettings))
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: Self.duration)
             guard !Task.isCancelled else { return }
@@ -174,13 +192,13 @@ final class SystemAudioUnavailablePanelController: SystemAudioUnavailablePresent
 /// never takes the focus and stays until it is hidden.
 @MainActor
 final class MicrophoneLostPanelController: MicrophoneLostPresenting {
-    static let message = "Microfono non disponibile: la registrazione prosegue senza la tua voce."
+    static var message: String { L10n.string("Microfono non disponibile: la registrazione prosegue senza la tua voce.") }
 
     private var panel: NSPanel?
 
     func show() {
         hide()
-        panel = MenuBarPanel.show(NoticeView(symbol: "mic.slash", message: Self.message), stacked: true)
+        panel = MenuBarPanel.show(NoticeView(symbol: "mic.slash", message: Self.message, isLoss: true), stacked: true)
     }
 
     func hide() {
@@ -195,13 +213,15 @@ final class MicrophoneLostPanelController: MicrophoneLostPresenting {
 /// microphone when both are lost.
 @MainActor
 final class SystemAudioLostPanelController: SystemAudioLostPresenting {
-    static let message = "Audio di sistema non disponibile: la registrazione prosegue senza gli altri partecipanti."
+    static var message: String {
+        L10n.string("Audio di sistema non disponibile: la registrazione prosegue senza gli altri partecipanti.")
+    }
 
     private var panel: NSPanel?
 
     func show() {
         hide()
-        panel = MenuBarPanel.show(NoticeView(symbol: "speaker.slash", message: Self.message), stacked: true)
+        panel = MenuBarPanel.show(NoticeView(symbol: "speaker.slash", message: Self.message, isLoss: true), stacked: true)
     }
 
     func hide() {
@@ -265,7 +285,7 @@ private enum MenuBarPanel {
     /// the top right of the main screen if the icon cannot be found.
     private static func origin(for size: NSSize, below top: CGFloat? = nil) -> NSPoint {
         let gap: CGFloat = 6
-        let statusFrame = NSApp.windows.first { $0.className.contains("StatusBar") }?.frame
+        let statusFrame = StatusItemController.shared.buttonFrame
         let screen = NSScreen.screens.first { screen in
             statusFrame.map { screen.frame.contains(NSPoint(x: $0.midX, y: $0.midY)) } ?? false
         } ?? NSScreen.main ?? NSScreen.screens.first
@@ -277,61 +297,58 @@ private enum MenuBarPanel {
     }
 }
 
+/// The proposal panel: the proposal card alone on ink, radius 18, 320 px wide. The title and the
+/// number of people follow what Teams shows while the panel is up.
 private struct ProposalView: View {
     let appName: String
     let accept: @MainActor () -> Void
+    let dismiss: @MainActor () -> Void
+    /// Tells the panel the size of the content, when it changes.
+    let resize: (CGSize) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "mic.fill")
-                .foregroundStyle(.secondary)
-            Text("Call rilevata in \(appName)")
-            Button("Registra", action: accept)
-                .buttonStyle(.borderedProminent)
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .fixedSize()
+        ProposalCard(appName: appName, meeting: Recorder.shared.proposalMeeting, accept: accept, dismiss: dismiss)
+            .padding(18)
+            .frame(width: 320)
+            .background(LARPColor.ink, in: RoundedRectangle(cornerRadius: 18))
+            .larpAppearance(dark: true)
+            .larpEnvironment()
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { resize($0) }
     }
 }
 
-private struct EchoCancellationWarningView: View {
-    let message: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "headphones")
-                .foregroundStyle(.secondary)
-            Text(message)
-                .frame(width: 280, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .fixedSize()
-    }
-}
-
-/// A notice with an icon, a text and optionally a button.
+/// A notice: an ink card, radius 14, 300 px wide, white 13 px text with an icon in `#FF5A40` for a
+/// loss or `#D4F24A` for an information, and optionally an outline button on dark that opens System
+/// Settings.
 private struct NoticeView: View {
     let symbol: String
     let message: String
-    var buttonTitle: String?
+    var isLoss = false
+    var buttonTitle: LocalizedStringKey?
     var action: (@MainActor () -> Void)?
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .frame(width: 280, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-            if let buttonTitle, let action {
-                Button(buttonTitle, action: action)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isLoss ? LARPColor.recording : LARPColor.lime)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(verbatim: message)
+                    .font(LARPFont.inter(13))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let buttonTitle, let action {
+                    Button(buttonTitle, action: action)
+                        .buttonStyle(.larp(.outlineOnDark))
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .fixedSize()
+        .padding(14)
+        .frame(width: 300)
+        .background(LARPColor.ink, in: RoundedRectangle(cornerRadius: 14))
+        .larpAppearance(dark: true)
+        .larpEnvironment()
     }
 }

@@ -29,7 +29,7 @@ struct SystemAudioTapTests {
         }
     }
 
-    private func rig(withEchoRemover: Bool = false) throws -> Rig {
+    private func rig(withEchoRemover: Bool = false, reportedRate: Double? = nil, stallTimeout: TimeInterval = 2) throws -> Rig {
         let folder = FileManager.default.temporaryDirectory.appending(path: "larp-system-tap-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let recorder = TrackRecorder()
@@ -42,9 +42,10 @@ struct SystemAudioTapTests {
             microphonePipeline = pipeline
             echoRemover = EchoRemover(output: pipeline)
         }
-        let driver = FakeSystemDriver(tone: FakeTone(frequency: Self.frequency, channels: 2))
+        let driver = FakeSystemDriver(tone: FakeTone(frequency: Self.frequency, channels: 2), reportedRate: reportedRate)
         let tap = SystemAudioTap(
-            pipeline: pipeline, echoRemover: echoRemover, driver: driver, events: { events.append($0) })
+            pipeline: pipeline, echoRemover: echoRemover, driver: driver, stallTimeout: stallTimeout,
+            events: { events.append($0) })
         return Rig(
             tap: tap, driver: driver, pipeline: pipeline, recorder: recorder, events: events, folder: folder,
             echoRemover: echoRemover,
@@ -179,5 +180,101 @@ struct SystemAudioTapTests {
         #expect(!rig.tap.isLost)
         #expect(rig.driver.starts.value == 0)
         #expect(rig.events.events.isEmpty)
+    }
+
+    @Test("a tap that reports another rate than its stream from the start: the audio is read at the rate of the stream")
+    func tapRateDiffersFromTheStreamAtTheStart() async throws {
+        let rig = try rig(reportedRate: 24_000)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try rig.tap.start()
+        rig.driver.play(seconds: 3)
+        await rig.finish()
+
+        let formats = try #require(rig.driver.formats.first)
+        #expect(formats.reported?.sampleRate == 24_000)
+        #expect(formats.stream.sampleRate == 48_000)
+        let samples = rig.recorder.samples(of: .system)
+        expectTone(samples, from: 0, to: 3)
+        expectDuration(Double(samples.count) / AudioFormats.storageSampleRate, of: 3)
+    }
+
+    @Test("a change of the rate of the stream after the start restarts the capture at the new rate")
+    func streamRateChangesAfterTheStart() async throws {
+        let rig = try rig(reportedRate: 24_000)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try rig.tap.start()
+        rig.driver.play(seconds: 3)
+        rig.driver.changeRate(to: 16_000)
+        await rig.driver.starts.wait(atLeast: 2)
+        rig.driver.play(seconds: 3)
+        await rig.finish()
+
+        #expect(rig.driver.formats.map(\.stream.sampleRate) == [48_000, 16_000])
+        let samples = rig.recorder.samples(of: .system)
+        expectTone(samples, from: 0, to: 3)
+        expectTone(samples, from: 3, to: 6)
+        expectDuration(Double(samples.count) / AudioFormats.storageSampleRate, of: 6)
+    }
+
+    @Test("system audio that stops arriving starts the capture again, and the gap is filled with silence")
+    func stalledAudioRestartsTheCapture() async throws {
+        let rig = try rig(stallTimeout: 0.5)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try rig.tap.start()
+        rig.driver.play(seconds: 3)
+        // Nothing arrives any more: the capture starts again from scratch, nothing is told.
+        await rig.driver.starts.wait(atLeast: 2)
+        rig.driver.tone.skip(seconds: 3)
+        rig.driver.play(seconds: 3)
+        await rig.finish()
+
+        #expect(rig.events.events.isEmpty)
+        #expect(!rig.tap.isLost)
+        let samples = rig.recorder.samples(of: .system)
+        expectTone(samples, from: 0, to: 3)
+        let silence = TrackAnalysis.level(of: TrackAnalysis.window(samples, from: 3, to: 6))
+        #expect(silence < 0.001, "the track holds sound while the audio had stopped")
+        expectTone(samples, from: 6, to: 9)
+        expectDuration(Double(samples.count) / AudioFormats.storageSampleRate, of: 9)
+    }
+
+    @Test("system audio that stops arriving and cannot start again is lost")
+    func stalledAudioThenLost() async throws {
+        let rig = try rig(withEchoRemover: true, stallTimeout: 0.5)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+        let remover = try #require(rig.echoRemover)
+
+        try rig.tap.start()
+        rig.driver.play(seconds: 1)
+        rig.driver.fail(SystemAudioTap.TapError(operation: "create aggregate device", status: -1))
+        await rig.events.wait(forCount: 1)
+        #expect(rig.events.events == [.systemAudioLost])
+        #expect(rig.tap.isLost)
+        #expect(!remover.reset())
+        await rig.finish()
+    }
+
+    @Test("silence is audio that arrives: a capture that keeps delivering silence is not restarted")
+    func silenceIsNotAStall() async throws {
+        // The watch runs on its own queue and fires on time even when the whole suite keeps
+        // the test's task waiting: silence comes every 100 ms against a 1 s timeout, for
+        // twice the timeout, so only a capture that ignores silence is restarted.
+        let stallTimeout: TimeInterval = 1
+        let rig = try rig(stallTimeout: stallTimeout)
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        try rig.tap.start()
+        let clock = ContinuousClock()
+        let end = clock.now + .seconds(2 * stallTimeout)
+        while clock.now < end {
+            rig.driver.play(seconds: 0.1, silent: true)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await rig.finish()
+
+        #expect(rig.driver.starts.value == 1)
     }
 }

@@ -136,7 +136,7 @@ struct CallDeletionDuringWorkTests {
     @Test("summary: the process is ended, the call stays deleted and nothing is saved when the work ends", arguments: Ending.allCases)
     func summary(ending: Ending) async throws {
         let gate = WorkGate()
-        let answer = #"{"keyConcepts": ["Budget"], "decisions": [], "nextSteps": [{"text": "Scrivere", "owner": "Partecipante 1"}], "other": ""}"#
+        let answer = #"{"opening": "", "openingHighlight": "", "keyConcepts": ["Budget"], "decisions": [], "actionItems": [{"text": "Scrivere", "owner": "Partecipante 1"}], "openQuestions": [], "other": ""}"#
         let summarizer = FakeSummarizer(.held(gate, answer: ending == .fails ? nil : answer))
         var harness: CallHarness? = try CallHarness(summarizer: summarizer, summariesOn: true)
         let lifecycle = try #require(harness).lifecycle

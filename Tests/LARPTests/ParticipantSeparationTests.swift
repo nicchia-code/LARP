@@ -108,7 +108,7 @@ private struct FakeDiarizer: SpeakerDiarizing {
 
 private struct DiarizationFailure: Error {}
 
-@Suite("ParticipantSeparator", .serialized)
+@Suite("ParticipantSeparator", .serialized, .italianInterface)
 @MainActor
 struct ParticipantSeparatorTests {
     private func makeCall(in context: ModelContext) -> Call {
@@ -261,7 +261,7 @@ struct ParticipantSeparatorTests {
     }
 }
 
-@Suite("call machine: speaker separation")
+@Suite("call machine: speaker separation", .italianInterface)
 struct SeparationTransitionTests {
     @Test("Separating participants → Ready when the participants are separated and refinement is off")
     func separatedGoesReady() {

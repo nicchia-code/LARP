@@ -42,3 +42,45 @@ enum KnownCallApps {
         }
     }
 }
+
+/// The links of the known call apps that a calendar event can hold, and the app each belongs to.
+/// The names are those of `KnownCallApps` where the app is there ("Google Meet" lives in a
+/// browser, so it has no entry of its own).
+enum KnownCallLinks {
+    static let all: [(domain: String, appName: String)] = [
+        ("teams.microsoft.com", "Microsoft Teams"),
+        ("teams.live.com", "Microsoft Teams"),
+        ("zoom.us", "Zoom"),
+        ("meet.google.com", "Google Meet"),
+        ("webex.com", "Webex"),
+        ("facetime.apple.com", "FaceTime"),
+    ]
+
+    /// The call app whose link is in one of `texts`, looked at in order: a domain counts when it
+    /// is not the tail of a longer word (`us04web.zoom.us` is Zoom, `notzoom.us` is not).
+    static func appName(in texts: [String?]) -> String? {
+        for text in texts {
+            guard let text, !text.isEmpty else { continue }
+            let lowered = text.lowercased()
+            for (domain, appName) in all where contains(domain, in: lowered) {
+                return appName
+            }
+        }
+        return nil
+    }
+
+    private static func contains(_ domain: String, in text: String) -> Bool {
+        var searchStart = text.startIndex
+        while let range = text.range(of: domain, range: searchStart..<text.endIndex) {
+            if range.lowerBound == text.startIndex {
+                return true
+            }
+            let before = text[text.index(before: range.lowerBound)]
+            if !(before.isLetter || before.isNumber || before == "-") {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+}

@@ -9,6 +9,7 @@ struct ActiveRecording {
     let relay: LiveAudioRelay
     var session: (any LiveTranscriptionSession)?
     var linesTask: Task<Void, Never>?
+    var recognisedTask: Task<Void, Never>?
 }
 
 /// Hands the captured audio to the live transcription. The capture starts before
@@ -56,6 +57,15 @@ final class LiveAudioRelay: AudioBufferSink {
 }
 
 extension CallLifecycle {
+    /// `user.PAUSE_RECORDING` / `user.RESUME_RECORDING`: while paused both tracks and the live
+    /// transcription take silence in place of what is captured.
+    func recordingPaused(_ paused: Bool) {
+        guard activeRecording != nil else { return }
+        capture.setPaused(paused)
+        // `teams.SPEAKER_CHANGED` is not added while the recording is paused.
+        pauseSpeakerTimeline(paused)
+    }
+
     private static var logger: Logger { Logger(subsystem: "com.larp.LARP", category: "recording") }
 
     /// `recorder.RECORDING_STARTED`: a call is born in **Recording**. The microphone
@@ -89,6 +99,8 @@ extension CallLifecycle {
         }
         var recording = ActiveRecording(call: call, relay: relay)
         activeRecording = recording
+        live.begin(call: call)
+        beginMeetingInformation(for: call)
 
         // Live transcription starts only if the language is ready now: a language
         // that becomes ready later does not start it halfway.
@@ -102,7 +114,14 @@ extension CallLifecycle {
                         self.appendLiveLine(line, to: call)
                     }
                 }
+                // The text being recognised only goes to the live window; it is never stored.
+                recording.recognisedTask = Task {
+                    for await text in session.recognised {
+                        self.live.recognised(text)
+                    }
+                }
                 relay.attach(session)
+                live.transcriptionStarted()
             } catch {
                 Self.logger.error("Live transcription did not start: \(error.localizedDescription, privacy: .public)")
                 relay.close()
@@ -124,13 +143,17 @@ extension CallLifecycle {
         if let session = recording.session {
             fullyTranscribedLive = await session.finish()
             await recording.linesTask?.value
+            await recording.recognisedTask?.value
         }
         recording.relay.close()
+        // `recorder.RECORDING_STOPPED`: nothing is shown of the recording any more.
+        live.end()
 
         let call = recording.call
         let endedAt = now()
         call.endedAt = endedAt
         call.duration = max(0, endedAt.timeIntervalSince(call.startedAt))
+        endSpeakerTimeline(of: call)
         if !fullyTranscribedLive {
             // Part of the recording was not transcribed live: it is transcribed again
             // from the audio, as a whole.

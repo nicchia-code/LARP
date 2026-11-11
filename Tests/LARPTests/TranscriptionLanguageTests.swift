@@ -348,4 +348,61 @@ struct LaunchAtLoginTests {
         #expect(launch.isEnabled == false)
         #expect(launch.errorMessage != nil)
     }
+
+    @Test("a login item awaiting approval shows the switch as on")
+    func awaitingApprovalShowsOn() {
+        let launch = LaunchAtLogin(item: FakeLoginItem(status: .requiresApproval), defaults: makeDefaults())
+        #expect(launch.isEnabled)
+        #expect(launch.requiresApproval)
+    }
+
+    @Test("the error of a failed change names the action and the real state is read again")
+    func failedRemovalReadsRealState() {
+        let item = FakeLoginItem(status: .enabled)
+        let launch = LaunchAtLogin(item: item, defaults: makeDefaults())
+        item.failure = DownloadFailure()
+        AppLanguage.$override.withValue(.italian) {
+            launch.setEnabled(false)
+        }
+        #expect(launch.isEnabled)
+        #expect(launch.errorMessage?.hasPrefix("Impossibile cambiare l'avvio all'accesso: ") == true)
+        item.failure = nil
+        launch.setEnabled(false)
+        #expect(launch.errorMessage == nil)
+        #expect(launch.isEnabled == false)
+    }
+
+    @Test("opening the settings reads the login item again and looks for omp again")
+    func openSettingsReadsAgain() async {
+        let item = FakeLoginItem()
+        let launch = LaunchAtLogin(item: item, defaults: makeDefaults())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: SettingsKey.transcriptRefinement)
+        let status = AssistantStatusController(defaults: defaults, assistant: ReachableAssistantCheck())
+        status.appLaunched()
+        await status.waitUntilIdle()
+        #expect(status.state == .assistantReady)
+
+        item.status = .enabled  // turned on outside the app
+        SettingsEvents.openSettings(launchAtLogin: launch, assistantStatus: status)
+        #expect(launch.isEnabled)
+        #expect(status.state == .checking)
+        await status.waitUntilIdle()
+        #expect(status.state == .assistantReady)
+    }
+
+    @Test("the states of the speech model read as the settings show them")
+    func languageStatusTexts() {
+        let statuses: [TranscriptionLanguageController.Status] = [.checking, .downloading, .missing, .ready]
+        let texts = statuses.map {
+            SettingsText.languageStatus($0, language: .italian)
+        }
+        #expect(texts == [
+            "Verifica in corso…", "Download in corso…", "Non disponibile, nuovo tentativo appena possibile", "Pronta",
+        ])
+    }
+}
+
+private struct ReachableAssistantCheck: AssistantChecking {
+    func check() async -> Bool { true }
 }

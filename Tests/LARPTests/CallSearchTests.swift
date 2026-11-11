@@ -2,7 +2,7 @@ import Testing
 
 @testable import LARP
 
-@Suite("CallSearch")
+@Suite("CallSearch", .italianInterface)
 @MainActor
 struct CallSearchTests {
     private func makeCall(title: String?, lines: [String] = [], participants: [String] = []) -> Call {
@@ -72,9 +72,12 @@ struct CallSearchTests {
     private func makeSummarisedCall() -> Call {
         let call = makeCall(title: "Weekly", participants: ["Zoë"])
         call.summary = CallSummary(
+            opening: "Si parte a marzo con calma.",
+            openingHighlight: "marzo",
             keyConcepts: ["Il budget è alto"],
-            decisions: [],
-            nextSteps: [SummaryNextStep(text: "Inviare il piano", owner: "Partecipante 1")],
+            decisionItems: [SummaryDecision(text: "Assumere due persone", lineStart: 10)],
+            actionItems: [SummaryActionItem(text: "Inviare il piano", owner: "Partecipante 1", due: "venerdì prossimo")],
+            openQuestions: ["Chi firma il contratto?"],
             text: "Parlato anche di Partecipante 1 e Partecipante 2.",
             language: "it-IT"
         )
@@ -87,17 +90,21 @@ struct CallSearchTests {
         let call = makeSummarisedCall()
         #expect(CallSearch.matches(call, query: "BUDGET E ALTO"))
         #expect(CallSearch.matches(call, query: "concetti chiave"))
-        #expect(CallSearch.matches(call, query: "prossimi passi"))
+        #expect(CallSearch.matches(call, query: "azioni"))
+        #expect(CallSearch.matches(call, query: "rimasto aperto"))
         #expect(CallSearch.matches(call, query: "inviare il piano"))
+        #expect(CallSearch.matches(call, query: "si parte a marzo con calma"))
+        #expect(CallSearch.matches(call, query: "assumere due"))
+        #expect(CallSearch.matches(call, query: "firma il contratto"))
+        #expect(CallSearch.matches(call, query: "VENERDI prossimo"))
         #expect(!CallSearch.matches(call, query: "ferie"))
     }
 
     @Test("the summary is searched with the current names of the participants")
     func matchesSummaryWithNames() {
         let call = makeSummarisedCall()
-        #expect(CallSearch.matches(call, query: "piano (zoe)"))
         #expect(CallSearch.matches(call, query: "di zoe e partecipante 2"))
-        #expect(!CallSearch.matches(call, query: "piano (partecipante 1)"))
+        #expect(!CallSearch.matches(call, query: "partecipante 1"))
     }
 
     @Test("the word for an empty list is not searched")

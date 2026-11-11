@@ -54,15 +54,19 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Config/Info.plist
       properties:
         CFBundleDevelopmentRegion: it
+        # The interface is in Italian or English (String Catalog: Sources/LARP/Resources/Localizable.xcstrings).
+        CFBundleLocalizations: [it, en]
         CFBundleDisplayName: LARP
         LSApplicationCategoryType: public.app-category.productivity
         LSUIElement: true
         NSMicrophoneUsageDescription: "LARP usa il microfono per registrare la tua voce durante le call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno."
         NSAudioCaptureUsageDescription: "LARP registra l'audio di sistema per catturare la voce degli altri partecipanti alle call. L'audio resta sul tuo Mac e non viene mai inviato a nessun servizio esterno."
+        NSCalendarsFullAccessUsageDescription: "LARP legge il calendario per dare il nome alle registrazioni e indicare chi c'era alla riunione. I dati del calendario restano sul tuo Mac e non vengono mai inviati a nessun servizio esterno."
     entitlements:
       path: Config/LARP.entitlements
       properties:

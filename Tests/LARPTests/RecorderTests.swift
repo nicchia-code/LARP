@@ -8,20 +8,26 @@ private final class FakeProposals: ProposalPresenting {
     private(set) var shownApp: String?
     private(set) var showCount = 0
     private var accept: (@MainActor () -> Void)?
+    private var dismiss: (@MainActor () -> Void)?
 
-    func show(appName: String, accept: @escaping @MainActor () -> Void) {
+    func show(appName: String, accept: @escaping @MainActor () -> Void, dismiss: @escaping @MainActor () -> Void) {
         shownApp = appName
         showCount += 1
         self.accept = accept
+        self.dismiss = dismiss
     }
 
     func hide() {
         shownApp = nil
         accept = nil
+        dismiss = nil
     }
 
     /// The user taps "Registra" in the panel.
     func tapAccept() { accept?() }
+
+    /// The user taps "Non questa" in the panel.
+    func tapDismiss() { dismiss?() }
 }
 
 @MainActor
@@ -75,12 +81,40 @@ private final class FakeSystemAudioLostNotices: SystemAudioLostPresenting {
     func hide() { isShown = false }
 }
 
+@MainActor
+private final class FakeRecordingView: RecordingViewPresenting {
+    enum Call: Equatable { case started, stopped, liveWindow }
+    private(set) var calls: [Call] = []
+    func recordingStarted() { calls.append(.started) }
+    func recordingStopped() { calls.append(.stopped) }
+    func openLiveWindow() { calls.append(.liveWindow) }
+}
+
 /// The permission checks as the system answers them: the system audio one is only
 /// asked when the start needs it.
 private struct FakePermissions: RecordingPermissions {
     var missing: RecordingPermission?
+    /// What the read that asks nothing answers.
+    var grantedWithoutAsking = false
     func missingPermission(requireSystemAudio: Bool) async -> RecordingPermission? {
         missing == .systemAudio && !requireSystemAudio ? nil : missing
+    }
+    func bothGrantedWithoutAsking() -> Bool { grantedWithoutAsking }
+}
+
+/// The choices of the user the recorder reads: detection on, every app watched and automatic
+/// recording off, as they are at the first launch.
+@MainActor
+private final class FakeSettings {
+    var callDetectionIsOn = true
+    var unwatched: Set<String> = []
+    var autoRecordingIsOn = false
+
+    var recorderSettings: Recorder.Settings {
+        Recorder.Settings(
+            callDetectionIsOn: { [self] in callDetectionIsOn },
+            isWatched: { [self] in !unwatched.contains($0.name) },
+            autoRecordingIsOn: { [self] in autoRecordingIsOn })
     }
 }
 
@@ -98,17 +132,26 @@ private struct Fixture {
     let systemAudioNotices = FakeSystemAudioNotices()
     let microphoneLostNotices = FakeMicrophoneLostNotices()
     let systemAudioLostNotices = FakeSystemAudioLostNotices()
+    let recordingView = FakeRecordingView()
+    let settings = FakeSettings()
 
-    init(missing: RecordingPermission? = nil, source: any CallAppMicSource = FakeMicSource(stream: AsyncStream { _ in })) {
+    init(
+        missing: RecordingPermission? = nil, grantedWithoutAsking: Bool = false,
+        source: any CallAppMicSource = FakeMicSource(stream: AsyncStream { _ in }),
+        meetings: Recorder.Meetings = .none
+    ) {
         recorder = Recorder(
             micSource: source,
-            permissions: FakePermissions(missing: missing),
+            permissions: FakePermissions(missing: missing, grantedWithoutAsking: grantedWithoutAsking),
             proposals: proposals,
             alerts: alerts,
             echoWarnings: echoWarnings,
             systemAudioNotices: systemAudioNotices,
             microphoneLostNotices: microphoneLostNotices,
-            systemAudioLostNotices: systemAudioLostNotices
+            systemAudioLostNotices: systemAudioLostNotices,
+            recordingView: recordingView,
+            settings: settings.recorderSettings,
+            meetings: meetings
         )
     }
 }
@@ -379,16 +422,11 @@ struct RecorderTests {
         #expect(f.systemAudioNotices.shown.isEmpty)
     }
 
-    // MARK: Microphone on / Microphone lost
+    // MARK: Microphone lost notice
 
-    private func microphone(of recorder: Recorder) -> Recorder.Microphone? {
-        if case .recording(let recording) = recorder.state { recording.microphone } else { nil }
-    }
-
-    @Test func recordingStartsWithTheMicrophoneOn() async {
+    @Test func recordingStartsWithoutTheMicrophoneLostNotice() async {
         let f = Fixture()
         await f.recorder.startRecording()
-        #expect(microphone(of: f.recorder) == .on)
         #expect(!f.microphoneLostNotices.isShown)
     }
 
@@ -396,17 +434,15 @@ struct RecorderTests {
         let f = Fixture()
         await f.recorder.startRecording()
         f.recorder.captureEvent(.microphoneLost)
-        #expect(microphone(of: f.recorder) == .lost)
         #expect(f.recorder.isRecording)
         #expect(f.microphoneLostNotices.isShown)
     }
 
-    @Test func microphoneRestoredGoesBackToMicrophoneOnAndHidesTheNotice() async {
+    @Test func microphoneRestoredHidesTheNotice() async {
         let f = Fixture()
         await f.recorder.startRecording()
         f.recorder.captureEvent(.microphoneLost)
         f.recorder.captureEvent(.microphoneRestored)
-        #expect(microphone(of: f.recorder) == .on)
         #expect(!f.microphoneLostNotices.isShown)
         #expect(f.recorder.isRecording)
     }
@@ -439,13 +475,14 @@ struct RecorderTests {
         #expect(f.recorder.isRecording)
     }
 
-    @Test func nextRecordingStartsWithTheMicrophoneOn() async {
+    @Test func nextRecordingStartsWithoutTheMicrophoneLostNotice() async {
         let f = Fixture()
         await f.recorder.startRecording()
         f.recorder.captureEvent(.microphoneLost)
         f.recorder.stopRecording()
         await f.recorder.startRecording()
-        #expect(microphone(of: f.recorder) == .on)
+        #expect(f.recorder.isRecording)
+        #expect(!f.microphoneLostNotices.isShown)
     }
 
     @Test func microphoneEventsOutsideARecordingAreIgnored() {
@@ -566,5 +603,474 @@ struct KnownCallAppsTests {
         #expect(Recorder.formatElapsed(0) == "0:00")
         #expect(Recorder.formatElapsed(65) == "1:05")
         #expect(Recorder.formatElapsed(3600 + 61) == "1:01:01")
+    }
+}
+
+/// The "Avvia o ferma la registrazione" shortcut.
+@MainActor
+struct RecordingShortcutTests {
+    @Test func atRestItStartsARecordingByHandAndDuringOneItStopsIt() async {
+        let f = Fixture()
+        await f.recorder.toggleRecording()
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == nil)
+
+        await f.recorder.toggleRecording()
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func withAProposalShownItAcceptsIt() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        await f.recorder.toggleRecording()
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == zoom)
+        #expect(f.proposals.shownApp == nil)
+    }
+}
+
+/// The pause and the recording view (machine `recording-view`).
+@MainActor
+struct RecordingPauseAndViewTests {
+    @Test func theRecordingViewFollowsTheRecording() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        #expect(f.recordingView.calls == [.started])
+        f.recorder.stopRecording()
+        #expect(f.recordingView.calls == [.started, .stopped])
+    }
+
+    @Test func aProposalAloneShowsNothing() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        #expect(f.recordingView.calls.isEmpty)
+    }
+
+    @Test func theLiveWindowOpensOnlyDuringARecording() async {
+        let f = Fixture()
+        f.recorder.openLiveWindow()
+        #expect(f.recordingView.calls.isEmpty)
+        await f.recorder.startRecording()
+        f.recorder.openLiveWindow()
+        #expect(f.recordingView.calls == [.started, .liveWindow])
+    }
+
+    @Test func pausingAndResumingEmitTheirEventsAndKeepTheRecording() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.pauseRecording()
+        #expect(f.recorder.isPaused && f.recorder.isRecording)
+        f.recorder.pauseRecording()
+        f.recorder.resumeRecording()
+        #expect(!f.recorder.isPaused)
+        f.recorder.resumeRecording()
+        f.recorder.togglePause()
+        f.recorder.togglePause()
+        #expect(
+            await emitted(f.recorder, count: 5)
+                == [.started(callAppName: nil), .paused, .resumed, .paused, .resumed])
+    }
+
+    @Test func pausingOutsideARecordingDoesNothing() {
+        let f = Fixture()
+        f.recorder.pauseRecording()
+        f.recorder.resumeRecording()
+        #expect(!f.recorder.isPaused)
+    }
+
+    @Test func stoppingWhilePausedEndsThePauseToo() async {
+        let f = Fixture()
+        await f.recorder.startRecording()
+        f.recorder.pauseRecording()
+        f.recorder.stopRecording()
+        #expect(!f.recorder.isPaused)
+        await f.recorder.startRecording()
+        #expect(!f.recorder.isPaused)
+    }
+}
+
+/// The proposal that can be discarded, call detection and automatic recording.
+@MainActor
+struct RecorderDetectionTests {
+    // MARK: Call detection
+
+    @Test func withDetectionOffACallAppGivesNeitherAProposalNorARecording() {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.settings.callDetectionIsOn = false
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .idle)
+        #expect(f.proposals.showCount == 0)
+    }
+
+    @Test func anUnwatchedCallAppGivesNothingWhileTheOthersDo() {
+        let f = Fixture()
+        f.settings.unwatched = ["Zoom"]
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .idle)
+        f.recorder.handle(.started(teams))
+        #expect(f.recorder.state == .proposing(teams))
+    }
+
+    @Test func turningDetectionOffRemovesTheProposalEverywhereAndRecordsNothing() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.settings.callDetectionIsOn = false
+        f.recorder.callDetectionTurnedOff()
+        #expect(f.recorder.state == .idle)
+        #expect(f.proposals.shownApp == nil)
+        #expect(!f.recorder.isRecording)
+    }
+
+    @Test func turningDetectionOffRemovesADismissedProposalToo() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        f.settings.callDetectionIsOn = false
+        f.recorder.callDetectionTurnedOff()
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func turningDetectionOffLetsTheRecordingInProgressGoOn() async {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        f.settings.callDetectionIsOn = false
+        f.recorder.callDetectionTurnedOff()
+        #expect(f.recorder.isRecording)
+        // The recording is still tied to its call app.
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func turningDetectionOnCountsTheWatchedAppsUsingTheMicrophoneAsStarted() {
+        let f = Fixture()
+        f.settings.callDetectionIsOn = false
+        f.recorder.handle(.started(zoom))
+        f.recorder.handle(.started(teams))
+        f.settings.unwatched = ["Zoom"]
+        f.settings.callDetectionIsOn = true
+        f.recorder.callDetectionTurnedOn()
+        #expect(f.recorder.state == .proposing(teams))
+        #expect(f.proposals.shownApp == "Microsoft Teams")
+    }
+
+    @Test func severalAppsCountingAsStartedAreTakenInAlphabeticalOrder() {
+        let f = Fixture()
+        f.settings.callDetectionIsOn = false
+        f.recorder.handle(.started(zoom))
+        f.recorder.handle(.started(teams))
+        f.settings.callDetectionIsOn = true
+        f.recorder.callDetectionTurnedOn()
+        #expect(f.recorder.state == .proposing(teams))
+        #expect(f.proposals.showCount == 1)
+    }
+
+    @Test func anAppThatStoppedWhileDetectionWasOffDoesNotCountAsStarted() {
+        let f = Fixture()
+        f.settings.callDetectionIsOn = false
+        f.recorder.handle(.started(zoom))
+        f.recorder.handle(.stopped(zoom))
+        f.settings.callDetectionIsOn = true
+        f.recorder.callDetectionTurnedOn()
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func watchingAnAppAlreadyUsingTheMicrophoneCountsAsStarted() {
+        let f = Fixture()
+        f.settings.unwatched = ["Zoom"]
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .idle)
+        f.settings.unwatched = []
+        f.recorder.appWatched(zoom)
+        #expect(f.recorder.state == .proposing(zoom))
+    }
+
+    @Test func watchingAnAppWhileDetectionIsOffOnlySavesTheChoice() {
+        let f = Fixture()
+        f.settings.callDetectionIsOn = false
+        f.settings.unwatched = ["Zoom"]
+        f.recorder.handle(.started(zoom))
+        f.settings.unwatched = []
+        f.recorder.appWatched(zoom)
+        #expect(f.recorder.state == .idle)
+        // Detection on again: the app, now watched, counts as started.
+        f.settings.callDetectionIsOn = true
+        f.recorder.callDetectionTurnedOn()
+        #expect(f.recorder.state == .proposing(zoom))
+    }
+
+    @Test func watchingAnAppNotUsingTheMicrophoneDoesNothing() {
+        let f = Fixture()
+        f.recorder.appWatched(zoom)
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func unwatchingTheAppOfTheProposalRemovesIt() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.settings.unwatched = ["Microsoft Teams"]
+        f.recorder.appUnwatched(teams)
+        #expect(f.recorder.state == .proposing(zoom))
+        f.settings.unwatched = ["Zoom"]
+        f.recorder.appUnwatched(zoom)
+        #expect(f.recorder.state == .idle)
+        #expect(f.proposals.shownApp == nil)
+    }
+
+    @Test func unwatchingTheAppOfADismissedProposalRemovesIt() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        f.recorder.appUnwatched(zoom)
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func unwatchingTheAppOfARecordingLetsItGoOn() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        await f.recorder.acceptProposal()
+        f.settings.unwatched = ["Zoom"]
+        f.recorder.appUnwatched(zoom)
+        #expect(f.recorder.isRecording)
+    }
+
+    // MARK: Automatic recording
+
+    @Test func withAutomaticRecordingAndThePermissionsGrantedTheCallIsRecordedWithoutProposal() async {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == zoom)
+        #expect(f.proposals.showCount == 0)
+        #expect(f.alerts.presented.isEmpty)
+        #expect(f.recordingView.calls == [.started])
+        #expect(await emitted(f.recorder, count: 1) == [.started(callAppName: "Zoom")])
+    }
+
+    @Test func withAutomaticRecordingAndAPermissionNotGrantedYetTheProposalIsShown() {
+        let f = Fixture(grantedWithoutAsking: false)
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .proposing(zoom))
+        #expect(f.proposals.shownApp == "Zoom")
+    }
+
+    @Test func withoutAutomaticRecordingTheProposalIsShownEvenWithThePermissionsGranted() {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .proposing(zoom))
+    }
+
+    @Test func turningAutomaticRecordingOnLeavesTheProposalAlreadyShown() {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.recorder.handle(.started(zoom))
+        f.settings.autoRecordingIsOn = true
+        #expect(f.recorder.state == .proposing(zoom))
+        #expect(f.proposals.shownApp == "Zoom")
+    }
+
+    @Test func aCallAppStartingDuringAnAutomaticRecordingCreatesNothing() {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        f.recorder.handle(.started(teams))
+        #expect(f.proposals.showCount == 0)
+        f.recorder.handle(.stopped(teams))
+        #expect(f.recorder.isRecording)
+    }
+
+    @Test func theAutomaticRecordingEndsWhenItsCallAppStopsEvenWhilePaused() async {
+        let f = Fixture(grantedWithoutAsking: true)
+        f.settings.autoRecordingIsOn = true
+        f.recorder.handle(.started(zoom))
+        f.recorder.pauseRecording()
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.state == .idle)
+        #expect(!f.recorder.isPaused)
+        #expect(
+            await emitted(f.recorder, count: 3)
+                == [.started(callAppName: "Zoom"), .paused, .stopped])
+    }
+
+    @Test func aRecordingThatEndedWhileTheAppStillUsesTheMicrophoneIsNotProposedAgain() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        await f.recorder.acceptProposal()
+        f.recorder.stopRecording()
+        #expect(f.recorder.state == .idle)
+        #expect(f.proposals.showCount == 1)
+    }
+
+    // MARK: Proposal dismissed
+
+    @Test func dismissingTheProposalRemovesItEverywhereAndRecordsNothing() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        #expect(f.recorder.state == .proposalDismissed(zoom))
+        #expect(f.proposals.shownApp == nil)
+        #expect(!f.recorder.isRecording)
+        #expect(f.recordingView.calls.isEmpty)
+        #expect(f.recorder.canStartRecording)
+    }
+
+    @Test func tappingNonQuestaInThePanelDismisses() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.proposals.tapDismiss()
+        #expect(f.recorder.state == .proposalDismissed(zoom))
+    }
+
+    @Test func dismissingWithoutAProposalDoesNothing() {
+        let f = Fixture()
+        f.recorder.dismissProposal()
+        #expect(f.recorder.state == .idle)
+    }
+
+    @Test func aDismissedProposalCountsAsTheOneProposal() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        f.recorder.handle(.started(teams))
+        #expect(f.recorder.state == .proposalDismissed(zoom))
+        #expect(f.proposals.showCount == 1)
+        f.recorder.handle(.stopped(teams))
+        #expect(f.recorder.state == .proposalDismissed(zoom))
+    }
+
+    @Test func aDismissedProposalCannotBeAcceptedAnyMore() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        await f.recorder.acceptProposal()
+        #expect(f.recorder.state == .proposalDismissed(zoom))
+    }
+
+    @Test func theAppStoppingEndsTheDismissedProposalAndASecondUseGivesANewOne() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.state == .idle)
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.state == .proposing(zoom))
+        #expect(f.proposals.showCount == 2)
+    }
+
+    @Test func startingAfterNonQuestaRecordsTheCallAppOfTheDismissedProposal() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        await f.recorder.startRecording()
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == zoom)
+        #expect(await emitted(f.recorder, count: 1) == [.started(callAppName: "Zoom")])
+    }
+
+    @Test func theShortcutAfterNonQuestaStartsTheRecordingOfTheCallApp() async {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        await f.recorder.toggleRecording()
+        guard case .recording(let recording) = f.recorder.state else {
+            Issue.record("expected recording, got \(f.recorder.state)")
+            return
+        }
+        #expect(recording.callApp == zoom)
+    }
+
+    @Test func startingAfterNonQuestaNeedsTheSystemAudioPermissionToo() async {
+        let f = Fixture(missing: .systemAudio)
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        await f.recorder.startRecording()
+        #expect(f.recorder.state == .idle)
+        #expect(f.alerts.presented == [.systemAudio])
+    }
+
+    @Test func startingAfterNonQuestaNamesTheMicrophoneFirstWhenItIsMissing() async {
+        let f = Fixture(missing: .microphone)
+        f.recorder.handle(.started(zoom))
+        f.recorder.dismissProposal()
+        await f.recorder.startRecording()
+        #expect(f.recorder.state == .idle)
+        #expect(f.alerts.presented == [.microphone])
+        // The app still uses the microphone: nothing is proposed again.
+        #expect(f.proposals.showCount == 1)
+    }
+}
+
+/// The recorder gives the proposal the title and the number of people of the meeting.
+@MainActor
+struct RecorderProposalMeetingTests {
+    /// What Teams and the calendar say, as the test sets it.
+    @MainActor
+    private final class MeetingBox {
+        var teams: TeamsReadout.Meeting?
+        var event: CalendarMeeting?
+
+        var meetings: Recorder.Meetings {
+            Recorder.Meetings(teams: { [self] in teams }, calendar: { [self] in event })
+        }
+    }
+
+    @Test func theCalendarEventInProgressIsReadWhenTheProposalAppearsAndForgottenWhenItGoesAway() {
+        let box = MeetingBox()
+        box.event = CalendarMeeting(title: "Pianificazione", invitees: ["Anna"])
+        let f = Fixture(meetings: box.meetings)
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.proposalMeeting == ProposalMeeting(title: "Pianificazione", peopleCount: 2))
+
+        // The event read at the moment of the proposal stays, whatever the calendar says later.
+        box.event = nil
+        #expect(f.recorder.proposalMeeting.title == "Pianificazione")
+
+        // Teams takes over while the proposal is shown.
+        box.teams = TeamsReadout.Meeting(title: "Daily", people: ["A", "B", "C"])
+        #expect(f.recorder.proposalMeeting == ProposalMeeting(title: "Daily", peopleCount: 3))
+
+        f.recorder.dismissProposal()
+        box.teams = nil
+        #expect(f.recorder.proposalEvent == nil)
+        #expect(f.recorder.proposalMeeting == .unknown)
+    }
+
+    @Test func aCallAppThatStopsUsingTheMicrophoneDropsTheEventOfItsProposal() {
+        let box = MeetingBox()
+        box.event = CalendarMeeting(title: "Pianificazione", invitees: [])
+        let f = Fixture(meetings: box.meetings)
+        f.recorder.handle(.started(zoom))
+        f.recorder.handle(.stopped(zoom))
+        #expect(f.recorder.proposalEvent == nil)
+    }
+
+    @Test func acceptingTheProposalDropsTheEvent() async {
+        let box = MeetingBox()
+        box.event = CalendarMeeting(title: "Pianificazione", invitees: [])
+        let f = Fixture(meetings: box.meetings)
+        f.recorder.handle(.started(zoom))
+        await f.recorder.acceptProposal()
+        #expect(f.recorder.isRecording)
+        #expect(f.recorder.proposalEvent == nil)
+    }
+
+    @Test func withoutAMeetingTheProposalHasNoTitleAndNoNumberOfPeople() {
+        let f = Fixture()
+        f.recorder.handle(.started(zoom))
+        #expect(f.recorder.proposalMeeting == .unknown)
     }
 }

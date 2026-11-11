@@ -1,6 +1,13 @@
 import Foundation
 import os
 
+extension Notification.Name {
+    /// `call.TRANSCRIPT_REFINED`: posted on the main actor after the corrections of a refinement have
+    /// been applied to a call. The user info holds the identifier of the call under `"callID"`; read
+    /// it with `Notification.callID`.
+    static let transcriptRefined = Notification.Name("com.larp.LARP.transcriptRefined")
+}
+
 extension CallLifecycle {
     private static var logger: Logger { Logger(subsystem: "com.larp.LARP", category: "refinement") }
 
@@ -46,6 +53,7 @@ extension CallLifecycle {
             return
         }
         apply(.transcriptRefined, to: call)
+        NotificationCenter.default.post(name: .transcriptRefined, object: self, userInfo: ["callID": callID])
     }
 
     private func failRefinement(callID: UUID) {
@@ -111,8 +119,8 @@ extension CallLifecycle {
 
     // MARK: User actions
 
-    /// Whether "Rifinisci testo" applies: refinement is on and the call is Ready or
-    /// waiting to be refined again.
+    /// Whether "Rifinisci testo" applies: for a Ready call refinement must be on; a call
+    /// waiting to retry its refinement can be refined again also when refinement is off.
     func canRefine(_ call: Call) -> Bool {
         CallStateMachine.target(from: call.state, on: .refineTranscript(refinementOn: refinementIsOn())) != nil
     }

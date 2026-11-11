@@ -14,7 +14,8 @@ protocol NetworkAvailabilityEvents: Sendable {
 /// path goes from unsatisfied to satisfied.
 final class NetworkMonitor: NetworkAvailabilityEvents {
     /// The monitor shared by the app: the settings (language download) and the
-    /// call machine (separation retry) listen to the same one.
+    /// call and call-summary machines (separation, refinement and summary
+    /// retries) listen to the same one.
     static let shared = NetworkMonitor()
 
     /// State shared with the path handler (a `Mutex` cannot be captured).

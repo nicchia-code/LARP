@@ -5,7 +5,7 @@ import Testing
 
 @testable import LARP
 
-@Suite("Call recording", .serialized)
+@Suite("Call recording", .serialized, .italianInterface)
 @MainActor
 struct CallRecordingTests {
     // MARK: State chosen when the recording stops (the transition table)

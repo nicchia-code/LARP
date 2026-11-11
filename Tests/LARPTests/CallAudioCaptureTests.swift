@@ -16,7 +16,7 @@ struct CallAudioCaptureTests {
         private let emit: @Sendable (CaptureEvent) -> Void
         private let pipeline: TrackPipeline
         private let lost: Bool
-        private let state = Mutex((started: false, stopped: false))
+        private let state = Mutex((started: false, stopped: false, choiceChanges: 0))
 
         init(
             pipeline: TrackPipeline, failsToStart: Bool, lost: Bool, startEvents: [CaptureEvent],
@@ -32,7 +32,14 @@ struct CallAudioCaptureTests {
         var isStopped: Bool { state.withLock { $0.stopped } }
         var isLost: Bool { lost }
 
-        /// Starts and delivers one second of audio that arrived two seconds ago.
+        /// How many times the capture told the microphone that the choice changed.
+        var choiceChanges: Int { state.withLock { $0.choiceChanges } }
+
+        func microphoneChoiceChanged() {
+            state.withLock { $0.choiceChanges += 1 }
+        }
+
+        /// Starts and delivers one second of audio, and nothing since.
         func start() throws {
             if failsToStart { throw SourceFailure() }
             state.withLock { $0.started = true }
@@ -40,7 +47,7 @@ struct CallAudioCaptureTests {
             if let buffer = AVAudioPCMBuffer(pcmFormat: AudioFormats.storage, frameCapacity: frames) {
                 buffer.frameLength = frames
                 buffer.floatChannelData![0].update(repeating: 0.1, count: Int(frames))
-                pipeline.ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime - 2)
+                pipeline.ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime)
             }
             for event in startEvents { emit(event) }
         }
@@ -65,17 +72,16 @@ struct CallAudioCaptureTests {
         /// The system audio's track, set when the capture makes this source.
         let pipeline = Mutex<TrackPipeline?>(nil)
 
-        /// A source that is lost has delivered one second of audio that arrived two seconds
-        /// ago, and nothing since.
+        /// Delivers one second of audio at the start, and nothing since.
         func start() throws {
             if let failure { throw failure }
             state.withLock { $0.started = true }
-            guard lost, let pipeline = pipeline.withLock({ $0 }) else { return }
+            guard let pipeline = pipeline.withLock({ $0 }) else { return }
             let frames = AVAudioFrameCount(AudioFormats.storageSampleRate)
             if let buffer = AVAudioPCMBuffer(pcmFormat: AudioFormats.storage, frameCapacity: frames) {
                 buffer.frameLength = frames
                 buffer.floatChannelData![0].update(repeating: 0.1, count: Int(frames))
-                pipeline.ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime - 2)
+                pipeline.ingest(borrowing: buffer, arrival: ProcessInfo.processInfo.systemUptime)
             }
         }
 
@@ -240,17 +246,26 @@ struct CallAudioCaptureTests {
         #expect(rig.receivedEvents().isEmpty)
     }
 
-    @Test("a microphone still lost when the recording ends gets silence in mic.caf up to the end, system.caf stays as it is")
+    /// Records for `seconds`, then stops; returns how long the recording lasted, measured around
+    /// the calls.
+    private func record(_ rig: Rig, systemAudio policy: SystemAudioPolicy, seconds: Double) async throws -> Double {
+        let begin = ProcessInfo.processInfo.systemUptime
+        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: policy)
+        try await Task.sleep(for: .seconds(seconds))
+        await rig.capture.stop()
+        return ProcessInfo.processInfo.systemUptime - begin
+    }
+
+    @Test("a microphone still lost when the recording ends gets silence in mic.caf up to the end, system.caf stays empty")
     func silenceUpToTheEndWhenTheMicrophoneIsLost() async throws {
         let rig = try rig(systemFailure: permissionDenied(), microphoneLost: true)
         defer { try? FileManager.default.removeItem(at: rig.folder) }
 
-        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: .optional)
-        await rig.capture.stop()
+        let recording = try await record(rig, systemAudio: .optional, seconds: 1.5)
 
-        // One second of audio, then silence up to the end: the track started 3 seconds ago at least.
+        // One second of audio, then silence up to the end.
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
-        #expect(seconds >= 2.9)
+        #expect(abs(seconds - recording) < 0.3, "\(seconds) s in mic.caf, \(recording) s of recording")
         #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)) == nil)
     }
 
@@ -259,12 +274,36 @@ struct CallAudioCaptureTests {
         let rig = try rig(systemLost: true)
         defer { try? FileManager.default.removeItem(at: rig.folder) }
 
-        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: .required)
-        await rig.capture.stop()
+        let recording = try await record(rig, systemAudio: .required, seconds: 1.5)
 
-        // One second of audio, then silence up to the end: the track started 3 seconds ago at least.
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)))
-        #expect(seconds >= 2.9)
+        #expect(abs(seconds - recording) < 0.3, "\(seconds) s in system.caf, \(recording) s of recording")
+    }
+
+    @Test("sources that stopped delivering audio without being lost, or still run, get tracks as long as the recording")
+    func everyWrittenTrackLastsAsLongAsTheRecording() async throws {
+        let rig = try rig()
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        // Each source delivered one second of audio at the start and nothing since.
+        let recording = try await record(rig, systemAudio: .required, seconds: 1.5)
+
+        for track in [AudioTrack.microphone, .system] {
+            let seconds = try #require(AudioFileDuration.seconds(of: track.fileURL(in: rig.folder)))
+            #expect(abs(seconds - recording) < 0.3, "\(track.fileName) lasts \(seconds) s, the recording \(recording) s")
+        }
+    }
+
+    @Test("a system audio track that never started stays empty while the microphone track lasts as long as the recording")
+    func neverStartedSystemTrackStaysEmpty() async throws {
+        let rig = try rig(systemFailure: SourceFailure())
+        defer { try? FileManager.default.removeItem(at: rig.folder) }
+
+        let recording = try await record(rig, systemAudio: .optional, seconds: 1.5)
+
+        let microphone = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
+        #expect(abs(microphone - recording) < 0.3)
+        #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)) == nil)
     }
 
     @Test("while the system audio is lost the microphone reports no echo state")
@@ -276,17 +315,5 @@ struct CallAudioCaptureTests {
         await rig.capture.stop()
 
         #expect(rig.receivedEvents().isEmpty)
-    }
-
-    @Test("a microphone that is not lost is not padded when the recording ends")
-    func noSilenceWhenTheMicrophoneIsOn() async throws {
-        let rig = try rig()
-        defer { try? FileManager.default.removeItem(at: rig.folder) }
-
-        try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: .required)
-        await rig.capture.stop()
-
-        let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
-        #expect(abs(seconds - 1) < 0.2)
     }
 }

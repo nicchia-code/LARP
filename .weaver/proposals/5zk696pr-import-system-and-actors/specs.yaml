@@ -1,0 +1,56 @@
+languages:
+  - name: Swift
+    version: "6"
+    note: Swift 6 language mode with complete strict concurrency
+  - name: C++
+    version: "17"
+    note: the WebRTC audio processing package and its C wrapper
+  - name: C
+    version: "11"
+    note: the C sources of the WebRTC audio processing package
+frameworks:
+  - name: SwiftUI
+    note: menu bar extra, archive window and settings scene
+  - name: SwiftData
+    note: the archive of calls, transcript lines, participants and summaries
+  - name: AVFoundation
+    note: microphone capture, audio files and playback
+  - name: Core Audio
+    note: process taps and aggregate devices for the system audio, call app detection
+  - name: Speech
+    note: on-device transcription and speech model download
+  - name: FluidAudio
+    version: "0"
+    note: pinned to the exact version 0.17.7; offline speaker diarization to tell participants apart
+  - name: WebRTC Audio Processing
+    version: "2"
+    note: webrtc-audio-processing tag v2.1 built from source in Packages/WebRTCAudioProcessing; only its echo canceller AEC3 is used; needs Abseil from firebase/abseil-cpp-SwiftPM pinned to 0.20250127.1
+  - name: ServiceManagement
+    note: starting the app at login
+  - name: Network
+    note: noticing when the network comes back
+data:
+  - name: SwiftData store
+    note: LARP.store in the LARP folder of Application Support
+  - name: UserDefaults
+    note: the settings
+  - name: CAF audio files
+    note: AAC, mono, 16 kHz; one microphone and one system audio file per call
+testing:
+  - name: Swift Testing
+    note: tests run inside the app; the test plan skips the tag requiresHardware
+ci:
+  - name: GitHub Actions
+    note: ci.yml on every push and pull request, release.yml on tags vX.Y.Z, on macos-26 runners
+repository:
+  - name: GitHub
+    note: private repository
+deployment:
+  - name: GitHub Releases
+    note: a DMG per version, ad-hoc signed and not notarized
+notes: |
+  - macOS 26 or later, Apple silicon (arm64) only; every xcodebuild invocation passes ARCHS=arm64.
+  - The Xcode project is generated with XcodeGen from project.yml and is not committed.
+  - Dependencies only through Swift Package Manager.
+  - The app is not sandboxed and is ad-hoc signed, with the hardened runtime off.
+  - omp is an optional external program installed by the user, not bundled.
