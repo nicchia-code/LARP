@@ -45,6 +45,35 @@ protocol SystemAudioDriver: Sendable {
     func observeDevices(onChange: @escaping @Sendable () -> Void) -> any SystemAudioHandle
 }
 
+/// The time the stall watch of `SystemAudioTap` reads and waits on; replaced in tests by a
+/// clock they move by hand, so that a busy machine never looks like audio that stopped.
+protocol StallClock: Sendable {
+    /// Nanoseconds of a monotonic time. Called on the Core Audio I/O thread: it must neither
+    /// lock nor allocate.
+    func now() -> UInt64
+    /// Calls `fire` on `queue` once `seconds` have passed, unless the handle is stopped first.
+    func after(_ seconds: TimeInterval, on queue: DispatchQueue, fire: @escaping @Sendable () -> Void) -> any SystemAudioHandle
+}
+
+/// The system uptime and a Dispatch timer.
+struct UptimeStallClock: StallClock {
+    private final class Timer: SystemAudioHandle, @unchecked Sendable {
+        let source: any DispatchSourceTimer
+        init(_ source: any DispatchSourceTimer) { self.source = source }
+        func stop() { source.cancel() }
+    }
+
+    func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    func after(_ seconds: TimeInterval, on queue: DispatchQueue, fire: @escaping @Sendable () -> Void) -> any SystemAudioHandle {
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.setEventHandler(handler: fire)
+        source.schedule(deadline: .now() + seconds)
+        source.resume()
+        return Timer(source)
+    }
+}
+
 /// Captures everything the Mac plays except LARP itself (through a `SystemAudioDriver`:
 /// a Core Audio process tap read through a private aggregate device) and feeds a
 /// `TrackPipeline`. Needs only the system audio recording permission, not the screen
@@ -80,12 +109,18 @@ final class SystemAudioTap: @unchecked Sendable {
 
     /// The time of the last delivery, from the I/O thread without a lock.
     private final class Heartbeat: Sendable {
-        private let last = Atomic<UInt64>(DispatchTime.now().uptimeNanoseconds)
+        private let clock: any StallClock
+        private let last: Atomic<UInt64>
 
-        func beat() { last.store(DispatchTime.now().uptimeNanoseconds, ordering: .relaxed) }
+        init(clock: any StallClock) {
+            self.clock = clock
+            last = Atomic(clock.now())
+        }
+
+        func beat() { last.store(clock.now(), ordering: .relaxed) }
 
         func secondsSinceLast() -> TimeInterval {
-            let now = DispatchTime.now().uptimeNanoseconds
+            let now = clock.now()
             return Double(now &- min(last.load(ordering: .relaxed), now)) / 1_000_000_000
         }
     }
@@ -109,9 +144,11 @@ final class SystemAudioTap: @unchecked Sendable {
     private var capture: (any SystemAudioRun)?
     private var observation: (any SystemAudioHandle)?
     private var isRunning = false
-    private var watch: DispatchSourceTimer?
+    private var watch: (any SystemAudioHandle)?
+    /// The time the stall watch reads and waits on.
+    private let clock: any StallClock
     /// When the last buffer was delivered, written by the I/O thread.
-    private let heartbeat = Heartbeat()
+    private let heartbeat: Heartbeat
     /// How long without audio counts as stalled.
     private let stallTimeout: TimeInterval
 
@@ -121,7 +158,7 @@ final class SystemAudioTap: @unchecked Sendable {
     ///     `nil` when nothing is removed from the microphone.
     init(
         pipeline: TrackPipeline, echoRemover: EchoRemover? = nil, driver: any SystemAudioDriver = CoreAudioSystemDriver(),
-        stallTimeout: TimeInterval = SystemAudioTap.defaultStallTimeout,
+        stallTimeout: TimeInterval = SystemAudioTap.defaultStallTimeout, stallClock: any StallClock = UptimeStallClock(),
         events: @escaping @Sendable (CaptureEvent) -> Void = { _ in }
     ) {
         self.pipeline = pipeline
@@ -129,6 +166,8 @@ final class SystemAudioTap: @unchecked Sendable {
         reference = echoRemover?.reference
         self.driver = driver
         self.stallTimeout = stallTimeout
+        clock = stallClock
+        heartbeat = Heartbeat(clock: stallClock)
         self.events = events
     }
 
@@ -188,17 +227,13 @@ final class SystemAudioTap: @unchecked Sendable {
 
     /// Starts the wait for audio again: `time.SYSTEM_AUDIO_STALLED` fires when no buffer
     /// has been delivered for `stallTimeout`. Runs on `queue`, never on the I/O thread.
-    private func armWatch() {
+    private func armWatch(after seconds: TimeInterval? = nil) {
         disarmWatch()
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.setEventHandler { [weak self] in self?.checkStall() }
-        timer.schedule(deadline: .now() + stallTimeout)
-        timer.resume()
-        watch = timer
+        watch = clock.after(seconds ?? stallTimeout, on: queue) { [weak self] in self?.checkStall() }
     }
 
     private func disarmWatch() {
-        watch?.cancel()
+        watch?.stop()
         watch = nil
     }
 
@@ -206,7 +241,7 @@ final class SystemAudioTap: @unchecked Sendable {
         guard isRunning, capture != nil else { return }
         let silent = heartbeat.secondsSinceLast()
         guard silent >= stallTimeout else {
-            watch?.schedule(deadline: .now() + (stallTimeout - silent))
+            armWatch(after: stallTimeout - silent)
             return
         }
         // Like a change of audio devices: the capture starts again from scratch, and when it

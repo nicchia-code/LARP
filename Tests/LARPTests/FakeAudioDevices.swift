@@ -246,6 +246,47 @@ final class FakeSystemDriver: SystemAudioDriver {
     }
 }
 
+/// The clock of the stall watch of the system audio, which moves only when the test moves it:
+/// however busy the machine, the watch fires inside `advance(by:)` and never by itself.
+final class ManualStallClock: StallClock {
+    private final class Timer: SystemAudioHandle, Sendable {
+        private let active = Atomic(true)
+        var isActive: Bool { active.load(ordering: .relaxed) }
+        func stop() { active.store(false, ordering: .relaxed) }
+    }
+
+    private struct Pending: Sendable {
+        let deadline: UInt64
+        let queue: DispatchQueue
+        let fire: @Sendable () -> Void
+        let timer: Timer
+    }
+
+    private let time = Atomic<UInt64>(0)
+    private let pending = Mutex<[Pending]>([])
+
+    func now() -> UInt64 { time.load(ordering: .relaxed) }
+
+    func after(_ seconds: TimeInterval, on queue: DispatchQueue, fire: @escaping @Sendable () -> Void) -> any SystemAudioHandle {
+        let timer = Timer()
+        let deadline = now() + UInt64((seconds * 1_000_000_000).rounded())
+        pending.withLock { $0.append(Pending(deadline: deadline, queue: queue, fire: fire, timer: timer)) }
+        return timer
+    }
+
+    /// Moves the time on by `seconds`; before returning, runs on their queue every timer due by
+    /// then, those they set included, so what a timer starts is already queued after it.
+    func advance(by seconds: TimeInterval) {
+        let now = time.add(UInt64((seconds * 1_000_000_000).rounded()), ordering: .relaxed).newValue
+        while let due = pending.withLock({ pending -> Pending? in
+            guard let index = pending.firstIndex(where: { $0.deadline <= now }) else { return nil }
+            return pending.remove(at: index)
+        }) {
+            if due.timer.isActive { due.queue.sync(execute: due.fire) }
+        }
+    }
+}
+
 // MARK: - Microphone
 
 /// The microphone: it runs at `rate`, which a test changes. Its engines keep the rate they

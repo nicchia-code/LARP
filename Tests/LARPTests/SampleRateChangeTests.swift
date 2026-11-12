@@ -48,7 +48,8 @@ struct SampleRateChangeTests {
                 MicrophoneCapture(pipeline: pipeline, events: events, makeEngine: { _ in microphone.makeEngine() })
             },
             makeSystem: { pipeline, _, events in
-                SystemAudioTap(pipeline: pipeline, driver: output, events: events)
+                // The stall watch never fires by itself: the test waits on restarts with no audio coming.
+                SystemAudioTap(pipeline: pipeline, driver: output, stallClock: ManualStallClock(), events: events)
             })
 
         try await capture.start(into: folder, sink: recorder, systemAudio: .required)

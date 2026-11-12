@@ -246,14 +246,25 @@ struct CallAudioCaptureTests {
         #expect(rig.receivedEvents().isEmpty)
     }
 
-    /// Records for `seconds`, then stops; returns how long the recording lasted, measured around
-    /// the calls.
-    private func record(_ rig: Rig, systemAudio policy: SystemAudioPolicy, seconds: Double) async throws -> Double {
+    /// Records for `seconds`, then stops. Returns how long the recording can have lasted: at
+    /// least the time slept between the calls, at most the time measured around them (on a busy
+    /// machine starting and stopping take long, and only the time between them is recorded).
+    private func record(_ rig: Rig, systemAudio policy: SystemAudioPolicy, seconds: Double) async throws -> ClosedRange<Double> {
         let begin = ProcessInfo.processInfo.systemUptime
         try await rig.capture.start(into: rig.folder, sink: nil, systemAudio: policy)
         try await Task.sleep(for: .seconds(seconds))
         await rig.capture.stop()
-        return ProcessInfo.processInfo.systemUptime - begin
+        return seconds...(ProcessInfo.processInfo.systemUptime - begin)
+    }
+
+    /// `seconds` of a track last as long as the `recording`, give or take what the encoder rounds.
+    private func expectLasts(
+        _ seconds: Double, as recording: ClosedRange<Double>, _ track: AudioTrack,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(
+            seconds >= recording.lowerBound - 0.1 && seconds <= recording.upperBound + 0.1,
+            "\(track.fileName) lasts \(seconds) s, the recording \(recording) s", sourceLocation: sourceLocation)
     }
 
     @Test("a microphone still lost when the recording ends gets silence in mic.caf up to the end, system.caf stays empty")
@@ -265,7 +276,7 @@ struct CallAudioCaptureTests {
 
         // One second of audio, then silence up to the end.
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
-        #expect(abs(seconds - recording) < 0.3, "\(seconds) s in mic.caf, \(recording) s of recording")
+        expectLasts(seconds, as: recording, .microphone)
         #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)) == nil)
     }
 
@@ -277,7 +288,7 @@ struct CallAudioCaptureTests {
         let recording = try await record(rig, systemAudio: .required, seconds: 1.5)
 
         let seconds = try #require(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)))
-        #expect(abs(seconds - recording) < 0.3, "\(seconds) s in system.caf, \(recording) s of recording")
+        expectLasts(seconds, as: recording, .system)
     }
 
     @Test("sources that stopped delivering audio without being lost, or still run, get tracks as long as the recording")
@@ -290,7 +301,7 @@ struct CallAudioCaptureTests {
 
         for track in [AudioTrack.microphone, .system] {
             let seconds = try #require(AudioFileDuration.seconds(of: track.fileURL(in: rig.folder)))
-            #expect(abs(seconds - recording) < 0.3, "\(track.fileName) lasts \(seconds) s, the recording \(recording) s")
+            expectLasts(seconds, as: recording, track)
         }
     }
 
@@ -302,7 +313,7 @@ struct CallAudioCaptureTests {
         let recording = try await record(rig, systemAudio: .optional, seconds: 1.5)
 
         let microphone = try #require(AudioFileDuration.seconds(of: AudioTrack.microphone.fileURL(in: rig.folder)))
-        #expect(abs(microphone - recording) < 0.3)
+        expectLasts(microphone, as: recording, .microphone)
         #expect(AudioFileDuration.seconds(of: AudioTrack.system.fileURL(in: rig.folder)) == nil)
     }
 

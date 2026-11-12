@@ -5,7 +5,8 @@ import Testing
 @testable import LARP
 
 /// The restart logic of the system audio capture, over fake devices that change their
-/// sample rate during the recording.
+/// sample rate during the recording. The time of the stall watch moves only when a test
+/// moves it, so a busy machine never restarts a capture the test did not mean to.
 @Suite("System audio tap")
 struct SystemAudioTapTests {
     private static let frequency = 440.0
@@ -16,6 +17,7 @@ struct SystemAudioTapTests {
         let pipeline: TrackPipeline
         let recorder: TrackRecorder
         let events: EventLog
+        let clock: ManualStallClock
         let folder: URL
         /// The echo remover of the recording, with the microphone's track.
         let echoRemover: EchoRemover?
@@ -43,11 +45,12 @@ struct SystemAudioTapTests {
             echoRemover = EchoRemover(output: pipeline)
         }
         let driver = FakeSystemDriver(tone: FakeTone(frequency: Self.frequency, channels: 2), reportedRate: reportedRate)
+        let clock = ManualStallClock()
         let tap = SystemAudioTap(
-            pipeline: pipeline, echoRemover: echoRemover, driver: driver, stallTimeout: stallTimeout,
+            pipeline: pipeline, echoRemover: echoRemover, driver: driver, stallTimeout: stallTimeout, stallClock: clock,
             events: { events.append($0) })
         return Rig(
-            tap: tap, driver: driver, pipeline: pipeline, recorder: recorder, events: events, folder: folder,
+            tap: tap, driver: driver, pipeline: pipeline, recorder: recorder, events: events, clock: clock, folder: folder,
             echoRemover: echoRemover,
             microphonePipeline: microphonePipeline)
     }
@@ -226,6 +229,7 @@ struct SystemAudioTapTests {
         try rig.tap.start()
         rig.driver.play(seconds: 3)
         // Nothing arrives any more: the capture starts again from scratch, nothing is told.
+        rig.clock.advance(by: 0.5)
         await rig.driver.starts.wait(atLeast: 2)
         rig.driver.tone.skip(seconds: 3)
         rig.driver.play(seconds: 3)
@@ -250,6 +254,7 @@ struct SystemAudioTapTests {
         try rig.tap.start()
         rig.driver.play(seconds: 1)
         rig.driver.fail(SystemAudioTap.TapError(operation: "create aggregate device", status: -1))
+        rig.clock.advance(by: 0.5)
         await rig.events.wait(forCount: 1)
         #expect(rig.events.events == [.systemAudioLost])
         #expect(rig.tap.isLost)
@@ -259,19 +264,14 @@ struct SystemAudioTapTests {
 
     @Test("silence is audio that arrives: a capture that keeps delivering silence is not restarted")
     func silenceIsNotAStall() async throws {
-        // The watch runs on its own queue and fires on time even when the whole suite keeps
-        // the test's task waiting: silence comes every 100 ms against a 1 s timeout, for
-        // twice the timeout, so only a capture that ignores silence is restarted.
-        let stallTimeout: TimeInterval = 1
-        let rig = try rig(stallTimeout: stallTimeout)
+        let rig = try rig(stallTimeout: 0.5)
         defer { try? FileManager.default.removeItem(at: rig.folder) }
 
+        // Silence every 100 ms for four times the timeout.
         try rig.tap.start()
-        let clock = ContinuousClock()
-        let end = clock.now + .seconds(2 * stallTimeout)
-        while clock.now < end {
+        for _ in 0..<20 {
             rig.driver.play(seconds: 0.1, silent: true)
-            try await Task.sleep(for: .milliseconds(100))
+            rig.clock.advance(by: 0.1)
         }
         await rig.finish()
 
