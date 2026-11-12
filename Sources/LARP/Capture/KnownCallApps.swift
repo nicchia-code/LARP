@@ -11,6 +11,27 @@ struct CallApp: Hashable, Sendable {
     var helperBundleIdentifiers: [String] = []
 }
 
+extension KnownCallApps {
+    /// The bundle identifier `KnownCallApps` lists for `app` that `bundleIdentifier` is, or is a
+    /// helper of: `com.microsoft.teams2.helper` gives `com.microsoft.teams2`, which is not the classic
+    /// `com.microsoft.teams`. `nil` when it is none of them.
+    static func listedBundleIdentifier(of bundleIdentifier: String, in app: CallApp) -> String? {
+        if app.helperBundleIdentifiers.contains(bundleIdentifier) { return bundleIdentifier }
+        return app.bundleIdentifiers.first { bundleIdentifier == $0 || bundleIdentifier.hasPrefix($0 + ".") }
+    }
+}
+
+extension CallAppAttribution {
+    /// The bundle identifier, as `KnownCallApps` lists it, of the process the call app was recognised
+    /// in: the one macOS holds responsible, the process itself, or a parent, in the order the
+    /// attribution looks at them. `nil` when no app was recognised.
+    var matchedBundleIdentifier: String? {
+        guard let app else { return nil }
+        let candidates = [responsible?.bundleIdentifier, coreAudioBundleIdentifier] + parents.map(\.bundleIdentifier)
+        return candidates.lazy.compactMap { $0.flatMap { KnownCallApps.listedBundleIdentifier(of: $0, in: app) } }.first
+    }
+}
+
 /// The call apps LARP knows about. This is the single place to extend when a new
 /// call app has to be recognized.
 enum KnownCallApps {

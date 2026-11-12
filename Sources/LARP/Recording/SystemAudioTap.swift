@@ -30,13 +30,14 @@ protocol SystemAudioDriver: Sendable {
     /// during the call. `onChange` is called, off the Core Audio I/O thread, when the
     /// capture no longer follows the output or the format of its stream differs from the
     /// one that labels the buffers (any `macos.AUDIO_DEVICES_CHANGED` of the system
-    /// audio); the capture has to be stopped and started again then. Throws when the
+    /// audio) and gets the reason for the diagnostic log (which values changed); the capture has
+    /// to be stopped and started again then. Throws when the
     /// capture cannot start, also when the tap's stream is not found. The buffers it drops
     /// itself (of a run that ended or no longer follows the output, or that cannot be read)
     /// are counted in `drops`.
     func startCapture(
         deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
-        onChange: @escaping @Sendable () -> Void,
+        onChange: @escaping @Sendable (_ reason: String) -> Void,
         drops: BufferDrops
     ) throws -> any SystemAudioRun
 
@@ -210,16 +211,17 @@ final class SystemAudioTap: @unchecked Sendable {
                 pipeline.ingest(borrowing: buffer, arrival: arrival)
                 reference?.ingest(borrowing: buffer, arrival: arrival)
             },
-            onChange: { [weak self] in self?.devicesChanged() },
+            onChange: { [weak self] reason in self?.devicesChanged(reason: reason) },
             drops: pipeline.drops)
         CaptureLog.systemAudioStarted(run.formats)
         armWatch()
         return run
     }
 
-    /// Called from Core Audio's own queues.
-    private func devicesChanged() {
+    /// Called from Core Audio's own queues. The reason is written once per burst of changes.
+    private func devicesChanged(reason: String) {
         guard changePending.withLock({ pending in defer { pending = true }; return !pending }) else { return }
+        CaptureLog.systemAudioRestarting(reason)
         queue.async { [self] in restart() }
     }
 
@@ -247,7 +249,7 @@ final class SystemAudioTap: @unchecked Sendable {
         // Like a change of audio devices: the capture starts again from scratch, and when it
         // cannot, the system audio is lost.
         disarmWatch()
-        devicesChanged()
+        devicesChanged(reason: CaptureLog.stalledReason(seconds: silent))
     }
 
     /// `macos.AUDIO_DEVICES_CHANGED`: Captured → Captured or Captured → Lost, and
@@ -266,15 +268,19 @@ final class SystemAudioTap: @unchecked Sendable {
         } catch {
             // Core Audio tells when a device shows up or the default output changes
             // even while nothing is captured.
-            observation = driver.observeDevices { [weak self] in self?.devicesChanged() }
+            observation = driver.observeDevices { [weak self] in
+                self?.devicesChanged(reason: "audio devices changed while the system audio is lost")
+            }
             if !lost.withLock({ state in defer { state = true }; return state }) {
                 echoRemover?.suspendReference()
+                CaptureLog.systemAudioLost()
                 events(.systemAudioLost)
             }
             return
         }
         if lost.withLock({ state in defer { state = false }; return state }) {
             let echoCancelled = echoRemover?.resumeReference()
+            CaptureLog.systemAudioRestored()
             events(.systemAudioRestored)
             if let echoCancelled { events(.echoCancellation(available: echoCancelled)) }
         }

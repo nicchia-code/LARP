@@ -12,6 +12,8 @@ struct LARPApp: App {
     private let markdownFolderSync: MarkdownFolderSync
 
     init() {
+        // The diagnostic log: files older than 30 days go now, then once a day.
+        DiagnosticLog.startCleaning()
         // The three fonts of the visual language, before any view is drawn.
         LARPFont.register()
         do {
@@ -66,6 +68,14 @@ struct LARPApp: App {
         Task {
             for await news in teamsNews {
                 teamsLifecycle.teamsMeetingNews(news)
+            }
+        }
+        // What the reading of Teams follows: Teams using the microphone and the recordings. Subscribed
+        // before the call apps are monitored, so that a Teams already using the microphone counts.
+        let recorderActivity = Recorder.shared.activity
+        Task {
+            for await activity in recorderActivity {
+                teamsMeeting.recorderActivity(activity)
             }
         }
         teamsMeeting.start()

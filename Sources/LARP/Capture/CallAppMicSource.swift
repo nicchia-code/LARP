@@ -2,6 +2,13 @@
 enum CallAppMicEvent: Equatable, Sendable {
     case started(CallApp)
     case stopped(CallApp)
+    /// A process of the app with this bundle identifier, as `KnownCallApps` lists it (for Teams,
+    /// `com.microsoft.teams2` or `com.microsoft.teams`), started using the microphone. Several
+    /// bundles can belong to one `CallApp`; this tells which one it was. The recorder does not
+    /// react to it.
+    case bundleStarted(String)
+    /// No process of that bundle uses the microphone any more.
+    case bundleStopped(String)
 }
 
 /// Source of microphone usage events of the known call apps. Replaced in tests.

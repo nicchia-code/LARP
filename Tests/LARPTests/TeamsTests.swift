@@ -38,6 +38,11 @@ private final class FakeTeamsReader: TeamsReading {
     func show(_ meeting: TeamsReadout.Meeting?) {
         onReadout?(TeamsReadout(meeting: meeting))
     }
+
+    /// A reading as it is.
+    func emit(_ readout: TeamsReadout) {
+        onReadout?(readout)
+    }
 }
 
 private let suite = "com.larp.tests.teams"
@@ -279,7 +284,8 @@ struct TeamsMeetingTests {
         let controller: TeamsMeetingController
     }
 
-    private func makeSetup(allowed: Bool = true) -> Setup {
+    /// `needed`: Teams uses the microphone, so that it is read while access is allowed.
+    private func makeSetup(allowed: Bool = true, needed: Bool = true) -> Setup {
         let permission = FakePermission()
         permission.set(granted: allowed)
         let access = TeamsAccessController(
@@ -288,6 +294,7 @@ struct TeamsMeetingTests {
         let reader = FakeTeamsReader()
         let controller = TeamsMeetingController(access: access, reader: reader)
         controller.start()
+        if needed { controller.teamsMicrophoneChanged(inUse: true) }
         return Setup(access: access, permission: permission, reader: reader, controller: controller)
     }
 
@@ -336,6 +343,12 @@ struct TeamsMeetingTests {
             (.inMeeting, .meetingLeft, .noMeeting),
             (.inMeeting, .accessLost, .noMeeting),
             (.inMeeting, .meetingJoined(accessAllowed: true), nil),
+            (.inMeeting, .callAppMicStopped(recording: false), .noMeeting),
+            (.inMeeting, .callAppMicStopped(recording: true), nil),
+            (.inMeeting, .recordingStopped(teamsUsesMicrophone: false), .noMeeting),
+            (.inMeeting, .recordingStopped(teamsUsesMicrophone: true), nil),
+            (.noMeeting, .callAppMicStopped(recording: false), nil),
+            (.noMeeting, .recordingStopped(teamsUsesMicrophone: false), nil),
         ] as [(TeamsMeetingState, TeamsMeetingEvent, TeamsMeetingState?)])
     func table(state: TeamsMeetingState, event: TeamsMeetingEvent, expected: TeamsMeetingState?) {
         #expect(TeamsMeetingStateMachine.target(from: state, on: event) == expected)
@@ -466,6 +479,136 @@ struct TeamsMeetingTests {
         #expect(setup.controller.title == "Retro")
         #expect(log.items == [.meetingJoined(title: "Daily"), .meetingEnded, .meetingJoined(title: "Retro")])
     }
+
+    @Test("a title read after the meeting was joined without one is news, and the first one is kept")
+    func titleReadLater() async {
+        let setup = makeSetup()
+        let log = collect(setup.controller)
+        setup.reader.show(.init())
+        setup.reader.show(.init(title: "Daily"))
+        setup.reader.show(.init(title: "Altro"))
+        await log.settle()
+        #expect(setup.controller.title == "Daily")
+        #expect(log.items == [.meetingJoined(title: nil), .titleRead("Daily")])
+    }
+
+    @Test("a reading that stopped at a limit before the meeting was found leaves the meeting as it was")
+    func inconclusiveReading() async {
+        let setup = makeSetup()
+        let log = collect(setup.controller)
+        setup.reader.show(.init(title: "Daily", people: ["Anna"], speaker: "Anna"))
+        setup.reader.emit(.leavesMeetingAsItWas)
+        await log.settle()
+        #expect(setup.controller.state == .inMeeting)
+        #expect(setup.controller.people == ["Anna"])
+        #expect(setup.controller.speaker == "Anna")
+        #expect(log.items.last != .meetingEnded)
+    }
+
+    @Test("Teams is not read while it does not use the microphone and nothing is recorded")
+    func notReadWithoutNeed() {
+        let setup = makeSetup(needed: false)
+        #expect(!setup.reader.isReading)
+        setup.controller.recordingChanged(isRecording: true)
+        #expect(setup.reader.isReading)
+        setup.controller.recordingChanged(isRecording: false)
+        #expect(!setup.reader.isReading)
+        setup.controller.teamsMicrophoneChanged(inUse: true)
+        #expect(setup.reader.isReading)
+        #expect(setup.reader.startCount == 2)
+    }
+
+    @Test("Teams uses the microphone or a recording goes on: one is enough to go on reading")
+    func eitherNeedKeepsReading() async {
+        let setup = makeSetup(needed: false)
+        let log = collect(setup.controller)
+        setup.controller.teamsMicrophoneChanged(inUse: true)
+        setup.controller.recordingChanged(isRecording: true)
+        setup.reader.show(.init(title: "Daily", people: ["Anna"]))
+
+        setup.controller.teamsMicrophoneChanged(inUse: false)
+        #expect(setup.reader.isReading)
+        #expect(setup.controller.state == .inMeeting)
+
+        setup.controller.recordingChanged(isRecording: false)
+        await log.settle()
+        #expect(!setup.reader.isReading)
+        #expect(setup.controller.state == .noMeeting)
+        #expect(setup.controller.title == nil)
+        #expect(setup.controller.people.isEmpty)
+        #expect(log.items.last == .meetingEnded)
+    }
+
+    @Test("a recording that ends while Teams uses the microphone leaves the meeting known")
+    func recordingEndsWhileTeamsTalks() {
+        let setup = makeSetup(needed: false)
+        setup.controller.recordingChanged(isRecording: true)
+        setup.controller.teamsMicrophoneChanged(inUse: true)
+        setup.reader.show(.init(title: "Daily"))
+        setup.controller.recordingChanged(isRecording: false)
+        #expect(setup.reader.isReading)
+        #expect(setup.controller.state == .inMeeting)
+    }
+
+    @Test("Teams stops using the microphone with no recording: the reading stops and the meeting is forgotten")
+    func microphoneStopped() {
+        let setup = makeSetup()
+        setup.reader.show(.init(title: "Daily", people: ["Anna"], speaker: "Anna"))
+        setup.controller.teamsMicrophoneChanged(inUse: false)
+        #expect(!setup.reader.isReading)
+        #expect(setup.controller.state == .noMeeting)
+        #expect(setup.controller.speaker == nil)
+        #expect(setup.controller.meeting == nil)
+    }
+
+    @Test("only the main process of the new Teams counts: not another app, not the classic Teams")
+    func onlyTeamsCounts() {
+        let setup = makeSetup(needed: false)
+        let zoom = CallApp(name: "Zoom", bundleIdentifiers: ["us.zoom.xos"])
+        let teams = CallApp(name: "Microsoft Teams", bundleIdentifiers: ["com.microsoft.teams2", "com.microsoft.teams"])
+        setup.controller.recorderActivity(.callAppMic(.started(zoom)))
+        setup.controller.recorderActivity(.callAppMic(.bundleStarted("us.zoom.xos")))
+        setup.controller.recorderActivity(.callAppMic(.started(teams)))
+        setup.controller.recorderActivity(.callAppMic(.bundleStarted("com.microsoft.teams")))
+        #expect(!setup.reader.isReading)
+        setup.controller.recorderActivity(.callAppMic(.bundleStarted("com.microsoft.teams2")))
+        #expect(setup.reader.isReading)
+        setup.controller.recorderActivity(.callAppMic(.bundleStopped("com.microsoft.teams")))
+        #expect(setup.reader.isReading)
+        setup.controller.recorderActivity(.callAppMic(.bundleStopped("com.microsoft.teams2")))
+        #expect(!setup.reader.isReading)
+        setup.controller.recorderActivity(.recordingStarted)
+        #expect(setup.reader.isReading)
+        setup.controller.recorderActivity(.recordingStopped)
+        #expect(!setup.reader.isReading)
+    }
+
+    @Test("the bundle a process was recognised in is the one KnownCallApps lists, helpers included")
+    func matchedBundle() {
+        let teams = KnownCallApps.app(forBundleIdentifier: "com.microsoft.teams2")!
+        func attribution(own: String, parents: [String] = []) -> CallAppAttribution {
+            CallAppAttribution(
+                pid: 10, coreAudioBundleIdentifier: own, responsible: nil,
+                parents: parents.map { ProcessIdentity(pid: 2, bundleIdentifier: $0) }, walkEnd: .notWalked, app: teams)
+        }
+        #expect(attribution(own: "com.microsoft.teams2").matchedBundleIdentifier == "com.microsoft.teams2")
+        #expect(attribution(own: "com.microsoft.teams2.helper").matchedBundleIdentifier == "com.microsoft.teams2")
+        #expect(attribution(own: "com.microsoft.teams").matchedBundleIdentifier == "com.microsoft.teams")
+        #expect(attribution(own: "x.helper", parents: ["com.microsoft.teams2"]).matchedBundleIdentifier == "com.microsoft.teams2")
+        #expect(
+            CallAppAttribution(
+                pid: 10, coreAudioBundleIdentifier: "", responsible: nil, parents: [], walkEnd: .unknownPID, app: nil
+            ).matchedBundleIdentifier == nil)
+    }
+
+    @Test("the reading never starts without access, whatever uses the microphone")
+    func neverWithoutAccess() {
+        let setup = makeSetup(allowed: false, needed: false)
+        setup.controller.teamsMicrophoneChanged(inUse: true)
+        setup.controller.recordingChanged(isRecording: true)
+        #expect(!setup.reader.isReading)
+        #expect(setup.reader.startCount == 0)
+    }
 }
 
 // MARK: - Timeline of speakers
@@ -560,6 +703,49 @@ struct TeamsRecordingTests {
         #expect(call.meetingTitle == "Daily")
         harness.lifecycle.teamsMeetingNews(.meetingJoined(title: "Altro"))
         #expect(call.meetingTitle == "Daily")
+    }
+
+    @Test("the first title read from Teams replaces the title of the calendar event; then it stays")
+    func teamsTitleReplacesTheCalendarOne() async throws {
+        let harness = try CallHarness()
+        defer { harness.cleanUp() }
+        harness.lifecycle.calendarMeeting = { CalendarMeeting(title: "Pianificazione", invitees: []) }
+        await harness.lifecycle.handle(.started(callAppName: "Microsoft Teams"))
+        let call = try #require(try harness.allCalls().first)
+        #expect(call.meetingTitle == "Pianificazione")
+
+        harness.lifecycle.teamsMeetingNews(.meetingJoined(title: nil))
+        #expect(call.meetingTitle == "Pianificazione")
+        harness.lifecycle.teamsMeetingNews(.titleRead("Daily"))
+        #expect(call.meetingTitle == "Daily")
+        harness.lifecycle.teamsMeetingNews(.titleRead("Altro"))
+        harness.lifecycle.teamsMeetingNews(.meetingJoined(title: "Ancora altro"))
+        #expect(call.meetingTitle == "Daily")
+    }
+
+    @Test("a meeting joined with a title replaces the calendar title too")
+    func joinedReplacesTheCalendarTitle() async throws {
+        let harness = try CallHarness()
+        defer { harness.cleanUp() }
+        harness.lifecycle.calendarMeeting = { CalendarMeeting(title: "Pianificazione", invitees: []) }
+        await harness.lifecycle.handle(.started(callAppName: "Microsoft Teams"))
+        let call = try #require(try harness.allCalls().first)
+
+        harness.lifecycle.teamsMeetingNews(.meetingJoined(title: "Daily"))
+        #expect(call.meetingTitle == "Daily")
+    }
+
+    @Test("the title typed by the user is never touched")
+    func typedTitleIsKept() async throws {
+        let harness = try CallHarness()
+        defer { harness.cleanUp() }
+        harness.lifecycle.calendarMeeting = { CalendarMeeting(title: "Pianificazione", invitees: []) }
+        await harness.lifecycle.handle(.started(callAppName: "Microsoft Teams"))
+        let call = try #require(try harness.allCalls().first)
+        call.title = "Il mio titolo"
+
+        harness.lifecycle.teamsMeetingNews(.titleRead("Daily"))
+        #expect(call.title == "Il mio titolo")
     }
 
     @Test("a meeting joined without a readable title leaves the call without one")

@@ -181,6 +181,28 @@ struct RecorderTests {
         #expect(f.proposals.shownApp == "Zoom")
     }
 
+    @Test func activityFollowsTheMicrophoneAndTheRecordingsWhateverTheSettings() async {
+        let f = Fixture()
+        f.settings.callDetectionIsOn = false
+        f.settings.unwatched = ["Microsoft Teams"]
+        var iterator = f.recorder.activity.makeAsyncIterator()
+
+        f.recorder.handle(.started(teams))
+        f.recorder.handle(.bundleStarted("com.microsoft.teams2"))
+        await f.recorder.startRecording()
+        f.recorder.handle(.bundleStopped("com.microsoft.teams2"))
+        f.recorder.handle(.stopped(teams))
+        f.recorder.stopRecording()
+
+        #expect(await iterator.next() == .callAppMic(.started(teams)))
+        #expect(await iterator.next() == .callAppMic(.bundleStarted("com.microsoft.teams2")))
+        #expect(await iterator.next() == .recordingStarted)
+        #expect(await iterator.next() == .callAppMic(.bundleStopped("com.microsoft.teams2")))
+        #expect(await iterator.next() == .callAppMic(.stopped(teams)))
+        #expect(await iterator.next() == .recordingStopped)
+        #expect(f.proposals.shownApp == nil)
+    }
+
     @Test func manualStartWithAllPermissionsRecordsWithoutApp() async {
         let f = Fixture()
         await f.recorder.startRecording()

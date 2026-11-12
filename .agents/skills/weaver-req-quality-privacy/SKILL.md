@@ -8,5 +8,7 @@ description: "Use when handling data read from other apps or the calendar, or an
 ## General
 
 - What LARP reads from Microsoft Teams and from the calendar (titles, names, speakers, events) is used only on the Mac, kept only with the call it belongs to, and never sent to omp, written to logs or included in what omp receives.
-- Teams is read only while the Accessibility permission is granted and the reading is needed (Teams running); reading the interface of Teams makes Teams keep its accessibility tree, which costs it some processor time: the settings say so under the Teams row.
+- Teams is read only while the Accessibility permission is granted and the reading is needed (Teams running and using the microphone, or a recording going on); reading the interface of Teams makes Teams keep its accessibility tree, which costs it some processor time: the settings say so under the Teams row.
 - The calendar is read only while connected; disconnecting stops every reading at once.
+- The diagnostic log of LARP stays on the Mac and is never sent anywhere. It holds identifiers of processes and apps, durations, counts, formats and reasons, and never audio, transcript text, names of people, titles or any other text read from Teams or the calendar.
+- The verification script of Teams writes only roles, identifiers, classes and lengths of texts, never the texts themselves.

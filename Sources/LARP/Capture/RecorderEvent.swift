@@ -12,3 +12,14 @@ enum RecorderEvent: Equatable, Sendable {
     /// The recording ended (`RECORDING_STOPPED`).
     case stopped
 }
+
+/// What the reading of Microsoft Teams follows: whether a call app uses the microphone (watched
+/// or not, whether or not call detection is on) and whether a recording is going on.
+enum RecorderActivity: Equatable, Sendable {
+    /// `macos.CALL_APP_MIC_STARTED` / `macos.CALL_APP_MIC_STOPPED`.
+    case callAppMic(CallAppMicEvent)
+    /// `recorder.RECORDING_STARTED`.
+    case recordingStarted
+    /// `recorder.RECORDING_STOPPED`.
+    case recordingStopped
+}

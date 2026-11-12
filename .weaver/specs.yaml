@@ -14,9 +14,9 @@ frameworks:
   - name: SwiftData
     note: the archive of calls, transcript lines, participants and summaries
   - name: AVFoundation
-    note: microphone capture, audio files and playback
+    note: microphone permission, audio files and playback
   - name: Core Audio
-    note: process taps and aggregate devices for the system audio, call app detection
+    note: process taps and aggregate devices for the system audio, input-only capture of the microphone, call app detection
   - name: Speech
     note: on-device transcription and speech model download
   - name: FluidAudio

@@ -38,3 +38,11 @@ enum AppPaths {
         "\(recordingsFolderName)/\(callID.uuidString)/\(fileName)"
     }
 }
+
+extension AppPaths {
+    /// `~/Library/Logs/LARP/`: the diagnostic log of LARP, one file per day.
+    static var diagnosticLogFolder: URL {
+        URL.libraryDirectory.appending(path: "Logs", directoryHint: .isDirectory)
+            .appending(path: folderName, directoryHint: .isDirectory)
+    }
+}

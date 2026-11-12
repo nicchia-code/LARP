@@ -114,12 +114,12 @@ final class FakeSystemDriver: SystemAudioDriver {
         let formats: SystemAudioFormats
         var labelRate: Double { formats.stream.sampleRate }
         let deliver: @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void
-        let onChange: @Sendable () -> Void
+        let onChange: @Sendable (_ reason: String) -> Void
         let active = Mutex(true)
 
         init(
             formats: SystemAudioFormats, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
-            onChange: @escaping @Sendable () -> Void
+            onChange: @escaping @Sendable (_ reason: String) -> Void
         ) {
             self.formats = formats
             self.deliver = deliver
@@ -165,7 +165,8 @@ final class FakeSystemDriver: SystemAudioDriver {
     }
 
     func startCapture(
-        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void,
+        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
+        onChange: @escaping @Sendable (_ reason: String) -> Void,
         drops: BufferDrops
     ) throws -> any SystemAudioRun {
         let result = state.withLock { state -> Result<Capture, SystemAudioTap.TapError> in
@@ -216,7 +217,7 @@ final class FakeSystemDriver: SystemAudioDriver {
     func notify() {
         let (capture, observation) = state.withLock { ($0.capture, $0.observation) }
         if let capture, capture.active.withLock({ $0 }) {
-            capture.onChange()
+            capture.onChange("fake output changed")
         } else if let observation, observation.active.withLock({ $0 }) {
             observation.onChange()
         }
@@ -289,22 +290,22 @@ final class ManualStallClock: StallClock {
 
 // MARK: - Microphone
 
-/// The microphone: it runs at `rate`, which a test changes. Its engines keep the rate they
-/// were made with, as the input node of an `AVAudioEngine` keeps its format until the engine
-/// is reset: only an engine made after the change reads the new rate.
+/// The microphone: it runs at `rate`, which a test changes. Its units keep the rate they were
+/// made with, as the unit of a start keeps the format it read until it is made again: only a unit
+/// made after the change reads the new rate.
 final class FakeMicrophoneDevice: Sendable {
     struct Failure: Error {}
 
-    fileprivate final class Engine: MicrophoneEngine, @unchecked Sendable {
+    fileprivate final class Unit: MicrophoneUnit, @unchecked Sendable {
         private struct Running {
             let labelRate: Double
             let deliver: @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void
-            let onConfigurationChange: @Sendable () -> Void
         }
 
         private let device: FakeMicrophoneDevice
         private let readRate: Double
         private let running = Mutex<Running?>(nil)
+        private let handler = Mutex<(@Sendable (MicrophoneUnitChange) -> Void)?>(nil)
 
         init(device: FakeMicrophoneDevice, rate: Double) {
             self.device = device
@@ -313,32 +314,28 @@ final class FakeMicrophoneDevice: Sendable {
 
         var isVoiceProcessingEnabled: Bool { false }
 
-        func inputFormat() -> AVAudioFormat {
+        func inputFormat() -> AVAudioFormat? {
             AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: readRate, channels: AVAudioChannelCount(device.tone.channels),
-                interleaved: false)!
+                interleaved: false)
         }
 
-        func start(
-            format: AVAudioFormat, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
-            onConfigurationChange: @escaping @Sendable () -> Void
-        ) throws {
+        func start(format: AVAudioFormat, deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void) throws {
             if device.state.withLock({ $0.fails }) { throw Failure() }
-            running.withLock {
-                $0 = Running(labelRate: format.sampleRate, deliver: deliver, onConfigurationChange: onConfigurationChange)
-            }
+            running.withLock { $0 = Running(labelRate: format.sampleRate, deliver: deliver) }
             device.starts.increment()
         }
 
         func stop() { running.withLock { $0 = nil } }
 
-        /// The engine stops itself and tells.
-        func configurationChanged() {
-            let notify = running.withLock { running -> (@Sendable () -> Void)? in
-                defer { running = nil }
-                return running?.onConfigurationChange
-            }
-            notify?()
+        func observeChanges(_ handler: @escaping @Sendable (MicrophoneUnitChange) -> Void) -> any InputDevicesObservation {
+            self.handler.withLock { $0 = handler }
+            return Observation { [weak self] in self?.handler.withLock { $0 = nil } }
+        }
+
+        /// The listeners of the device in use tell that something changed.
+        func notify(_ change: MicrophoneUnitChange) {
+            handler.withLock { $0 }?(change)
         }
 
         func play(seconds: Double, rate: Double) {
@@ -351,15 +348,21 @@ final class FakeMicrophoneDevice: Sendable {
         }
     }
 
+    private final class Observation: InputDevicesObservation, Sendable {
+        private let onCancel: @Sendable () -> Void
+        init(_ onCancel: @escaping @Sendable () -> Void) { self.onCancel = onCancel }
+        func cancel() { onCancel() }
+    }
+
     private struct State {
         var rate: Double
         var fails = false
-        var current: Engine?
+        var current: Unit?
     }
 
     let tone: FakeTone
     private let state: Mutex<State>
-    /// Engines that started.
+    /// Units that started.
     let starts = Counter()
 
     init(tone: FakeTone, rate: Double = 48_000) {
@@ -367,28 +370,33 @@ final class FakeMicrophoneDevice: Sendable {
         state = Mutex(State(rate: rate))
     }
 
-    /// What `MicrophoneCapture` calls to make the engine of a start.
-    func makeEngine() -> any MicrophoneEngine {
+    /// What `MicrophoneCapture` calls to make the unit of a start.
+    func makeUnit() -> any MicrophoneUnit {
         state.withLock { state in
-            let engine = Engine(device: self, rate: state.rate)
-            state.current = engine
-            return engine
+            let unit = Unit(device: self, rate: state.rate)
+            state.current = unit
+            return unit
         }
     }
 
-    /// Makes the engines fail to start (or not) from now on.
+    /// Makes the units fail to start (or not) from now on.
     func failToStart(_ fails: Bool) {
         state.withLock { $0.fails = fails }
     }
 
     /// The microphone changes its sample rate (Bluetooth headphones switching to their call
-    /// mode, another microphone): the engine in use stops itself and tells.
+    /// mode, another microphone): the listeners on the device in use tell.
     func changeRate(to rate: Double) {
-        let engine = state.withLock { state -> Engine? in
+        let unit = state.withLock { state -> Unit? in
             state.rate = rate
             return state.current
         }
-        engine?.configurationChanged()
+        unit?.notify(.formatChanged)
+    }
+
+    /// The microphone disappears: the listeners on the device in use tell.
+    func disappear() {
+        state.withLock { $0.current }?.notify(.gone)
     }
 
     /// The microphone hears `seconds` of the tone at its rate.
@@ -397,13 +405,44 @@ final class FakeMicrophoneDevice: Sendable {
         while remaining > 1e-9 {
             let piece = min(remaining, fakeBufferSeconds)
             remaining -= piece
-            let (rate, engine) = state.withLock { ($0.rate, $0.current) }
-            guard let engine else {
+            let (rate, unit) = state.withLock { ($0.rate, $0.current) }
+            guard let unit else {
                 tone.skip(seconds: piece)
                 continue
             }
-            engine.play(seconds: piece, rate: rate)
+            unit.play(seconds: piece, rate: rate)
         }
+    }
+}
+
+/// The audio output of the Mac as a test sets it: changing it tells the observers, as Core Audio
+/// does, from the thread that changed it.
+final class FakeOutputDevices: OutputDevices, Sendable {
+    private final class Token: InputDevicesObservation, Sendable {
+        private let onCancel: @Sendable () -> Void
+        init(_ onCancel: @escaping @Sendable () -> Void) { self.onCancel = onCancel }
+        func cancel() { onCancel() }
+    }
+
+    private let handlers = Mutex<[Int: @Sendable () -> Void]>([:])
+    private let next = Mutex(0)
+
+    func observeChanges(_ handler: @escaping @Sendable () -> Void) -> any InputDevicesObservation {
+        let id = next.withLock { value -> Int in
+            defer { value += 1 }
+            return value
+        }
+        handlers.withLock { $0[id] = handler }
+        return Token { [weak self] in _ = self?.handlers.withLock { $0.removeValue(forKey: id) } }
+    }
+
+    /// The number of observers that did not cancel.
+    var observerCount: Int { handlers.withLock { $0.count } }
+
+    /// The default output or its sample rate changes.
+    func change() {
+        let current = handlers.withLock { Array($0.values) }
+        for handler in current { handler() }
     }
 }
 

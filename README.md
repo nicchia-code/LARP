@@ -87,6 +87,28 @@ A summary has an opening sentence with its key part, the key concepts, the decis
 
 Questions and translations are optional too, off by default and independent of the other two ("Domande e traduzioni con omp" in the settings). With the switch on, a call page has the field "Chiedi qualcosa a questa call" under the summary and the link "Traduci" under the transcript. Each question and each translation runs in a process of omp of its own and sends the lines of the call as they are shown (refined or corrected text included) as "Io" or "Partecipante <numero>", never the audio, the title, the names given, the notes, the dates or the call app. Questions and answers, and the translation, live only while the page of the call stays open and are never stored. omp is looked for while at least one of the three switches is on.
 
+## Diagnostic log
+
+Besides the log of macOS (`os.Logger`, subsystem `com.larp.LARP`, which stays as it is and can be read in the Console app), LARP keeps a diagnostic log of its own to understand afterwards what happened during a call. It is always on, with no setting, and stays on the Mac.
+
+It lives in `~/Library/Logs/LARP/` (created when missing; in the Console app it is under "Log Reports" > "~/Library/Logs"), one UTF-8 text file per day, `LARP-<yyyy-MM-dd>.log`. Each line is one event: the local date and time in ISO 8601 with milliseconds, the area and the message, separated by spaces, for example `2026-11-12T10:15:30.123+01:00 capture Microphone restarts: microphone format changed`. Every line reaches the disk before the next one is written, so a crash or a frozen Mac loses none of the lines already written; a failure to write is ignored and never affects a recording. Files older than 30 days are deleted at launch and once a day while the app runs.
+
+The log never holds audio, transcript text, names of people, titles or any other text read from Teams or the calendar: only identifiers of processes and apps, durations, counts, formats and reasons.
+
+What each area writes:
+
+- `detection`: the detection of call apps (which processes and apps use the microphone, and what the recorder does with it).
+- `teams`: the reading of Microsoft Teams (when it starts and stops, and with what result, in roles, identifiers and counts).
+- `capture`: the formats at every start and restart of the system audio and of the microphone; the reason of every restart of the microphone (microphone to use changed, format changed, microphone gone, microphone chosen by the user) and every new echo canceller made because only the output changed; the reason of every restart of the system audio (which value of its signature changed, or how many seconds without audio when it stalled); every loss and return of the microphone and of the system audio; at the end of a recording, for each track, the seconds of audio written, the seconds of silence added and the length of the recording, and how many buffers each source dropped and why.
+
+To check the identifiers LARP reads from Microsoft Teams, run the verification script from the Terminal while a Teams call is going on:
+
+```sh
+swift scripts/teams-ax-dump.swift [output file]
+```
+
+The Terminal needs the Accessibility permission (System Settings > Privacy & Security > Accessibility). Without an argument the result goes on the Desktop, in a file named after the date and time. The script writes only roles, identifiers, classes and lengths of texts, never the texts themselves, and is not part of the app.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request on a `macos-26` runner: it installs XcodeGen, generates the project, builds and runs the tests.
@@ -112,17 +134,18 @@ Sources/LARP/Archive/       Library cards (with the waveform strip), "Importa fi
 Sources/LARP/Playback/      Playback of a call's audio, controls and transcript timeline (archive window)
 Sources/LARP/Call/          Call lifecycle: the call and call-summary machines and the work of each state, import of audio files, waveforms and line corrections, the Markdown file of each ready call in the folder the user chose
 Sources/LARP/Capture/       Call detection (recorder machine, with pause), known call apps, recording permissions, proposal and notice panels, the recording pill and the live window
-Sources/LARP/Recording/     Audio capture to disk: microphone (default or chosen input device, followed as devices change), system audio tap, echo cancellation, AAC/CAF writing, pause silence, track levels; conversion of an imported audio file into a track; block-wise peak measurement of the tracks for the waveform
+Sources/LARP/Recording/     Audio capture to disk: microphone (input-only Core Audio unit on the default or chosen input device, followed as devices change), system audio tap, echo cancellation, AAC/CAF writing, pause silence, track levels; conversion of an imported audio file into a track; block-wise peak measurement of the tracks for the waveform
 Sources/LARP/Transcription/ Speech-to-text of the microphone and system audio tracks
 Sources/LARP/Separation/    Telling the other participants apart by voice and assigning their lines
 Sources/LARP/Assistant/     omp: locating the program, the ACP client and the transcript refiner
 Sources/LARP/Refinement/    Request sent to omp to refine a transcript and the check of its answer
 Sources/LARP/Summary/       Request sent to omp to summarise a call and the check of its answer
 Sources/LARP/Settings/      Settings scene, welcome window shown at the first launch, UserDefaults keys, launch at login, network and language checks, the "Privacy e archivio" card (audio retention, location of the archive with "Mostra nel Finder"), choice of the Markdown folder
-Sources/LARP/Model/         SwiftData archive (Call, TranscriptLine, Participant, CallSummary), paths, store
+Sources/LARP/Model/         SwiftData archive (Call, TranscriptLine, Participant, CallSummary), paths, store, the diagnostic log (`DiagnosticLog`)
 Packages/WebRTCAudioProcessing/  WebRTC audio processing module (echo canceller), built from source
 Tests/LARPTests/       Swift Testing tests (tag .requiresHardware = not run in CI)
 Tests/LARP.xctestplan  Test plan: skips the .requiresHardware tag
+scripts/               Teams verification script (`teams-ax-dump.swift`), not part of the app
 .github/workflows/     CI (ci.yml) and release (release.yml) workflows
 ```
 

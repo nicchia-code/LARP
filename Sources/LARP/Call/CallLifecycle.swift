@@ -79,6 +79,9 @@ final class CallLifecycle {
     @ObservationIgnored var activeRecording: ActiveRecording?
     /// The timeline of Teams speakers of the call being recorded (see `CallLifecycle+Meeting`).
     @ObservationIgnored var speakerTimeline = SpeakerTimelineBuilder()
+    /// The meeting title of the call being recorded came from the calendar event in progress: the
+    /// first title read from Teams replaces it.
+    @ObservationIgnored var meetingTitleIsFromCalendar = false
     /// The meeting Teams shows now, read when a recording starts so that a recording that begins
     /// in a meeting already has its title, its people and its speaker. Wired by the app; absent
     /// means Teams shows nothing.

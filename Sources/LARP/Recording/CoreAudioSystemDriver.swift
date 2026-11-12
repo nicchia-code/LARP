@@ -10,7 +10,7 @@ import Synchronization
 struct CoreAudioSystemDriver: SystemAudioDriver {
     func startCapture(
         deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
-        onChange: @escaping @Sendable () -> Void,
+        onChange: @escaping @Sendable (_ reason: String) -> Void,
         drops: BufferDrops
     ) throws -> any SystemAudioRun {
         let capture = CoreAudioSystemCapture(deliver: deliver, onChange: onChange, drops: drops)
@@ -36,7 +36,7 @@ struct CoreAudioSystemDriver: SystemAudioDriver {
 
 /// Core Audio property listeners that call one handler, on a private queue (never the I/O
 /// thread of Core Audio).
-private final class PropertyListeners: SystemAudioHandle, @unchecked Sendable {
+final class PropertyListeners: SystemAudioHandle, @unchecked Sendable {
     let queue: DispatchQueue
     private let block: AudioObjectPropertyListenerBlock
     /// Only touched by whoever sets the listeners up and stops them, one after the other.
@@ -86,6 +86,20 @@ private final class CoreAudioSystemCapture: SystemAudioRun, @unchecked Sendable 
         var tapChannels: UInt32?
         /// The tap's own stream among the input streams of the aggregate device.
         var tapStream: TapStreamKey?
+
+        /// The names of the values that differ from `other`, for the diagnostic log.
+        func changes(from other: Signature) -> [String] {
+            var names: [String] = []
+            if defaultOutput != other.defaultOutput { names.append("default output") }
+            if outputRate != other.outputRate { names.append("output sample rate") }
+            if outputIsAlive != other.outputIsAlive { names.append("output liveness") }
+            if aggregateRate != other.aggregateRate { names.append("aggregate device sample rate") }
+            if subDevices != other.subDevices { names.append("aggregate sub-devices") }
+            if tapRate != other.tapRate { names.append("tap sample rate") }
+            if tapChannels != other.tapChannels { names.append("tap channels") }
+            if tapStream != other.tapStream { names.append("tap stream") }
+            return names
+        }
     }
 
     private struct TapStreamKey: Equatable {
@@ -140,7 +154,7 @@ private final class CoreAudioSystemCapture: SystemAudioRun, @unchecked Sendable 
     }
 
     private let deliver: @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void
-    private let onChange: @Sendable () -> Void
+    private let onChange: @Sendable (_ reason: String) -> Void
     private let drops: BufferDrops
     private let stale = Stale()
     private let state = Mutex(State())
@@ -158,8 +172,8 @@ private final class CoreAudioSystemCapture: SystemAudioRun, @unchecked Sendable 
     private(set) var formats = SystemAudioFormats(reported: nil, stream: AudioFormats.storage)
 
     init(
-        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void, onChange: @escaping @Sendable () -> Void,
-        drops: BufferDrops
+        deliver: @escaping @Sendable (AVAudioPCMBuffer, TimeInterval) -> Void,
+        onChange: @escaping @Sendable (_ reason: String) -> Void, drops: BufferDrops
     ) {
         self.deliver = deliver
         self.onChange = onChange
@@ -240,9 +254,12 @@ private final class CoreAudioSystemCapture: SystemAudioRun, @unchecked Sendable 
         // Something it depends on changed, or the tap's stream no longer runs in the format
         // that labels the buffers.
         let followsLabel = tapStream.map { StreamFormatKey($0.description) == label } ?? false
-        guard Self.signature(of: devices, tapStream: tapStream) != expected || !followsLabel else { return }
+        let current = Self.signature(of: devices, tapStream: tapStream)
+        guard current != expected || !followsLabel else { return }
         guard !stale.value.exchange(true, ordering: .sequentiallyConsistent) else { return }
-        onChange()
+        var reasons = current.changes(from: expected)
+        if !followsLabel { reasons.append("format of the tap's stream no longer the one of the buffers") }
+        onChange(reasons.joined(separator: ", "))
     }
 
     /// The tap's stream and everything else the capture depends on.

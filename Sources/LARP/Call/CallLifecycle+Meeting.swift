@@ -8,8 +8,9 @@ import Foundation
 /// Every piece may never come: a call whose Teams was never read has no meeting title, no names
 /// and no timeline.
 extension CallLifecycle {
-    /// What `teams-meeting` tells, during a recording: `teams.MEETING_JOINED` gives the call its
-    /// meeting title if it has none yet, `teams.PARTICIPANTS_READ` adds the names not already kept
+    /// What `teams-meeting` tells, during a recording: `teams.MEETING_JOINED` (and a title read
+    /// later) gives the call its meeting title if it has none yet or the one it has came from the
+    /// calendar event in progress, `teams.PARTICIPANTS_READ` adds the names not already kept
     /// to the names for its participants and `teams.SPEAKER_CHANGED` adds the change to the timeline
     /// of speakers at the elapsed time, not while the recording is paused. Nothing is kept when no
     /// call is being recorded.
@@ -17,7 +18,9 @@ extension CallLifecycle {
         guard let call = activeRecording?.call else { return }
         switch news {
         case .meetingJoined(let title):
-            keepMeetingTitle(title, on: call)
+            keepTeamsTitle(title, on: call)
+        case .titleRead(let title):
+            keepTeamsTitle(title, on: call)
         case .participantsRead(let names):
             keepParticipantNames(names, on: call)
         case .speakerChanged(let name):
@@ -31,7 +34,7 @@ extension CallLifecycle {
     }
 
     /// A recording starts: the call takes as meeting title the title of the meeting Teams shows, else
-    /// the title of the calendar event in progress, and as names for its participants the people Teams
+    /// the title of the calendar event in progress (which the first title read from Teams replaces), and as names for its participants the people Teams
     /// shows and the people invited to that event, as the Events would have given them; and, when
     /// Teams already shows a meeting, its speaker.
     func beginMeetingInformation(for call: Call) {
@@ -39,8 +42,12 @@ extension CallLifecycle {
         let meeting = teamsMeeting()
         let event = calendarMeeting()
         // The title of Teams comes first: the one kept is never replaced.
-        keepMeetingTitle(meeting?.title, on: call)
-        keepMeetingTitle(event?.title, on: call)
+        meetingTitleIsFromCalendar = false
+        keepTeamsTitle(meeting?.title, on: call)
+        if call.meetingTitle == nil, let title = event?.title, !title.isEmpty {
+            call.meetingTitle = title
+            meetingTitleIsFromCalendar = true
+        }
         keepParticipantNames((meeting?.people ?? []) + (event?.invitees ?? []), on: call)
         if let meeting {
             speakerTimeline.begin(speaker: meeting.speaker, at: elapsed(in: call))
@@ -67,11 +74,17 @@ extension CallLifecycle {
             call.speakerTimeline = speakerTimeline.spans
         }
         speakerTimeline = SpeakerTimelineBuilder()
+        meetingTitleIsFromCalendar = false
     }
 
-    private func keepMeetingTitle(_ title: String?, on call: Call) {
-        guard call.meetingTitle == nil, let title, !title.isEmpty else { return }
+    /// The title Teams shows is kept when the call has no meeting title or the one it has came from the
+    /// calendar; a title already taken from Teams stays. The title the user typed is another one
+    /// (`Call.title`) and is never touched.
+    private func keepTeamsTitle(_ title: String?, on call: Call) {
+        guard let title, !title.isEmpty else { return }
+        guard call.meetingTitle == nil || meetingTitleIsFromCalendar else { return }
         call.meetingTitle = title
+        meetingTitleIsFromCalendar = false
     }
 
     private func keepParticipantNames(_ names: [String], on call: Call) {

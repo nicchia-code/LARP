@@ -21,6 +21,10 @@ enum TeamsMeetingEvent: Sendable, Equatable {
     case meetingLeft
     /// `teams-access.ACCESS_LOST`
     case accessLost
+    /// `macos.CALL_APP_MIC_STOPPED` for Microsoft Teams. `recording`: a recording is going on.
+    case callAppMicStopped(recording: Bool)
+    /// `recorder.RECORDING_STOPPED`. `teamsUsesMicrophone`: Microsoft Teams uses the microphone.
+    case recordingStopped(teamsUsesMicrophone: Bool)
 }
 
 /// The transition table of the `teams-meeting` machine. Pure: it only says where an event leads;
@@ -38,6 +42,10 @@ enum TeamsMeetingStateMachine {
             return .inMeeting
         case (.inMeeting, .meetingLeft), (.inMeeting, .accessLost):
             return .noMeeting
+        case (.inMeeting, .callAppMicStopped(let recording)):
+            return recording ? nil : .noMeeting
+        case (.inMeeting, .recordingStopped(let teamsUsesMicrophone)):
+            return teamsUsesMicrophone ? nil : .noMeeting
 
         default:
             return nil

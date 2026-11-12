@@ -10,3 +10,6 @@ description: "Use when storing or reading anything the app keeps on disk: the ar
 - A store saved before summaries existed opens with every call without a summary.
 - The settings are kept in the user defaults of the app.
 - omp works in a new empty temporary folder for every request, deleted afterwards.
+- The diagnostic log of LARP lives outside the folder of the app, in `~/Library/Logs/LARP/`, created when missing: one text file per day, `LARP-<yyyy-MM-dd>.log`, in UTF-8. It is always on, with no setting.
+- Each line is one event: the local date and time in ISO 8601 with milliseconds, the area (`detection`, `teams`, `capture`) and the message, separated by spaces. Every line reaches the disk before the next one is written, so a crash or a frozen Mac loses none of the lines written before it. Lines are written from a private serial queue; a failure to write is ignored and never affects a recording.
+- Files of the diagnostic log older than 30 days are deleted at launch and once a day while the app runs.

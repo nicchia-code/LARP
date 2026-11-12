@@ -45,7 +45,7 @@ struct SampleRateChangeTests {
         let capture = CallAudioCapture(
             // Without echo removal: the test checks the speed of the tracks, not the cleaned microphone.
             makeMicrophone: { pipeline, _, events in
-                MicrophoneCapture(pipeline: pipeline, events: events, makeEngine: { _ in microphone.makeEngine() })
+                MicrophoneCapture(pipeline: pipeline, events: events, makeUnit: { _ in microphone.makeUnit() })
             },
             makeSystem: { pipeline, _, events in
                 // The stall watch never fires by itself: the test waits on restarts with no audio coming.
@@ -93,7 +93,7 @@ struct SampleRateChangeTests {
         let device = FakeMicrophoneDevice(tone: FakeTone(frequency: Self.microphoneFrequency, channels: 1), rate: 48_000)
         let recorder = TrackRecorder()
         let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: recorder)
-        let microphone = MicrophoneCapture(pipeline: pipeline, makeEngine: { _ in device.makeEngine() })
+        let microphone = MicrophoneCapture(pipeline: pipeline, makeUnit: { _ in device.makeUnit() })
 
         try microphone.start()
         device.play(seconds: 2)
@@ -118,7 +118,7 @@ struct SampleRateChangeTests {
         let events = EventLog()
         let pipeline = try TrackPipeline(track: .microphone, folder: folder, sink: nil)
         let microphone = MicrophoneCapture(
-            pipeline: pipeline, events: { events.append($0) }, makeEngine: { _ in device.makeEngine() })
+            pipeline: pipeline, events: { events.append($0) }, makeUnit: { _ in device.makeUnit() })
 
         try microphone.start()
         device.failToStart(true)

@@ -78,7 +78,15 @@ final class Recorder {
     /// events emitted before iteration starts are buffered.
     @ObservationIgnored let events: AsyncStream<RecorderEvent>
 
+    /// A new stream of what the reading of Teams follows, from now on: the call apps that start and
+    /// stop using the microphone, and the recordings that start and stop, in order. Subscribe
+    /// before `startMonitoring()`, which reports the apps already using the microphone.
+    var activity: AsyncStream<RecorderActivity> {
+        activityBroadcaster.stream()
+    }
+
     @ObservationIgnored private let eventContinuation: AsyncStream<RecorderEvent>.Continuation
+    @ObservationIgnored private let activityBroadcaster = EventBroadcaster<RecorderActivity>()
     @ObservationIgnored private let micSource: any CallAppMicSource
     @ObservationIgnored private let permissions: any RecordingPermissions
     @ObservationIgnored private let proposals: any ProposalPresenting
@@ -171,6 +179,7 @@ final class Recorder {
 
     /// `macos.CALL_APP_MIC_STARTED` / `macos.CALL_APP_MIC_STOPPED`.
     func handle(_ event: CallAppMicEvent) {
+        activityBroadcaster.emit(.callAppMic(event))
         switch event {
         case .started(let app):
             activeApps.insert(app)
@@ -178,6 +187,9 @@ final class Recorder {
         case .stopped(let app):
             activeApps.remove(app)
             callAppStopped(app)
+        case .bundleStarted, .bundleStopped:
+            // Only the reading of Teams follows which bundle it is (`activity`).
+            break
         }
     }
 
@@ -433,6 +445,7 @@ final class Recorder {
         // `recorder.RECORDING_STARTED`: the pill appears.
         recordingView.recordingStarted()
         eventContinuation.yield(.started(callAppName: app?.name))
+        activityBroadcaster.emit(.recordingStarted)
     }
 
     private func endRecording() {
@@ -448,6 +461,7 @@ final class Recorder {
         // `recorder.RECORDING_STOPPED`: the pill or the live window disappears.
         recordingView.recordingStopped()
         eventContinuation.yield(.stopped)
+        activityBroadcaster.emit(.recordingStopped)
     }
 
     /// `m:ss`, or `h:mm:ss` from one hour on.

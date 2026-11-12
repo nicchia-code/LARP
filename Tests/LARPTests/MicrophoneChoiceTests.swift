@@ -214,8 +214,8 @@ struct MicrophoneChoiceCaptureTests {
             microphone = MicrophoneCapture(
                 pipeline: pipeline, events: { events.append($0) }, inputDevices: devices,
                 chosenDevice: { choice.uid },
-                makeEngine: { device in
-                    (device?.uid ?? devices.systemDefault()?.uid) == usbMicrophone.uid ? usb.makeEngine() : builtIn.makeEngine()
+                makeUnit: { device in
+                    (device?.uid ?? devices.systemDefault()?.uid) == usbMicrophone.uid ? usb.makeUnit() : builtIn.makeUnit()
                 })
         }
 

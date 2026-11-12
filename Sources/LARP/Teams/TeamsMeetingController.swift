@@ -7,14 +7,23 @@ enum TeamsMeetingNews: Sendable, Equatable {
     case meetingJoined(title: String?)
     /// `teams.PARTICIPANTS_READ`: the people in the meeting now.
     case participantsRead([String])
+    /// The first title read from Teams for a meeting joined without one (the title of the meeting
+    /// is kept when it can be read).
+    case titleRead(String)
     /// `teams.SPEAKER_CHANGED`: the new speaker, or nobody.
     case speakerChanged(String?)
-    /// `teams.MEETING_LEFT` or `teams-access.ACCESS_LOST`: nobody is marked any more.
+    /// `teams.MEETING_LEFT`, `teams-access.ACCESS_LOST`, `macos.CALL_APP_MIC_STOPPED` or
+    /// `recorder.RECORDING_STOPPED`: nobody is marked any more.
     case meetingEnded
 }
 
 /// The `teams-meeting` machine: the meeting Microsoft Teams shows at this moment, as LARP reads it
-/// while Teams access is allowed: its title, the people in it and who is speaking.
+/// while Teams access is allowed and the reading is needed: its title, the people in it and who is
+/// speaking.
+///
+/// Teams is read only while access is allowed and Teams uses the microphone or a recording is going
+/// on (`teamsMicrophoneChanged`, `recordingChanged`); "Rileva le call" and the watched apps do not
+/// matter. When the reading stops being needed, it stops and the meeting is forgotten.
 ///
 /// The readings come from a `TeamsReading`; the changes between one reading and the next are the
 /// Events of the actor `teams` (`teams.MEETING_JOINED`, `teams.PARTICIPANTS_READ`,
@@ -50,6 +59,10 @@ final class TeamsMeetingController {
     @ObservationIgnored private let reader: any TeamsReading
     @ObservationIgnored private let broadcaster = EventBroadcaster<TeamsMeetingNews>()
     @ObservationIgnored private var isReading = false
+    /// Microsoft Teams uses the microphone (`macos.CALL_APP_MIC_STARTED`).
+    @ObservationIgnored private var teamsUsesMicrophone = false
+    /// A recording is going on (`recorder.RECORDING_STARTED`).
+    @ObservationIgnored private var isRecording = false
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
 
     init(
@@ -60,8 +73,8 @@ final class TeamsMeetingController {
         self.reader = reader
     }
 
-    /// Follows Teams access: Teams is read while it is allowed. Call once, at launch, after the
-    /// access machine has seen `macos.APP_LAUNCHED`.
+    /// Follows Teams access: Teams is read while it is allowed and needed. Call once, at launch,
+    /// after the access machine has seen `macos.APP_LAUNCHED`.
     func start() {
         guard tasks.isEmpty else { return }
         let allowedChanges = access.allowedChanges
@@ -91,20 +104,59 @@ final class TeamsMeetingController {
     /// `teams-access.ACCESS_LOST`: Teams is not read any more; title, people and speaker are
     /// forgotten, what was kept with a call stays.
     func accessLost() {
-        stopReading()
+        stopReading(because: "access to Teams lost")
         if let target = TeamsMeetingStateMachine.target(from: state, on: .accessLost) {
             leave(to: target)
         }
     }
 
-    /// Teams access became allowed or not: the reading starts or stops.
+    /// Teams access became allowed or not: the reading starts when it is needed, or stops.
     func accessChanged(allowed: Bool) {
-        if allowed {
-            guard !isReading else { return }
-            isReading = true
-            reader.start { [weak self] readout in self?.received(readout) }
-        } else {
-            stopReading()
+        reconcile(reason: allowed ? "access to Teams allowed" : "access to Teams not allowed")
+    }
+
+    /// `macos.CALL_APP_MIC_STARTED` and `macos.CALL_APP_MIC_STOPPED` for Microsoft Teams, whether or
+    /// not call detection is on and Teams is watched. When Teams stops using the microphone and no
+    /// recording is going on, the reading stops and the meeting is forgotten.
+    func teamsMicrophoneChanged(inUse: Bool) {
+        guard inUse != teamsUsesMicrophone else { return }
+        teamsUsesMicrophone = inUse
+        reconcile(reason: inUse ? "Teams uses the microphone" : "Teams stopped using the microphone")
+        if !inUse,
+            let target = TeamsMeetingStateMachine.target(from: state, on: .callAppMicStopped(recording: isRecording))
+        {
+            leave(to: target)
+        }
+    }
+
+    /// `recorder.RECORDING_STARTED` and `recorder.RECORDING_STOPPED`. When a recording ends while Teams
+    /// does not use the microphone, the reading stops and the meeting is forgotten.
+    func recordingChanged(isRecording: Bool) {
+        guard isRecording != self.isRecording else { return }
+        self.isRecording = isRecording
+        reconcile(reason: isRecording ? "recording started" : "recording stopped")
+        if !isRecording,
+            let target = TeamsMeetingStateMachine.target(
+                from: state, on: .recordingStopped(teamsUsesMicrophone: teamsUsesMicrophone))
+        {
+            leave(to: target)
+        }
+    }
+
+    /// What the recorder tells about the microphone and the recordings, for the reading of Teams.
+    func recorderActivity(_ activity: RecorderActivity) {
+        switch activity {
+        case .callAppMic(.bundleStarted(let bundle)):
+            // Only the main process of the new Teams; the classic Teams using the microphone is not.
+            if bundle == TeamsInterface.bundleIdentifier { teamsMicrophoneChanged(inUse: true) }
+        case .callAppMic(.bundleStopped(let bundle)):
+            if bundle == TeamsInterface.bundleIdentifier { teamsMicrophoneChanged(inUse: false) }
+        case .callAppMic(.started), .callAppMic(.stopped):
+            break
+        case .recordingStarted:
+            recordingChanged(isRecording: true)
+        case .recordingStopped:
+            recordingChanged(isRecording: false)
         }
     }
 
@@ -112,6 +164,8 @@ final class TeamsMeetingController {
     /// `teams`. Ignored while Teams access is not allowed.
     func received(_ readout: TeamsReadout) {
         guard access.isAllowed, isReading else { return }
+        // A reading that stopped at a limit before the element of the meeting was found says nothing.
+        guard !readout.leavesMeetingAsItWas else { return }
         guard let meeting = readout.meeting else {
             // `teams.MEETING_LEFT`
             if let target = TeamsMeetingStateMachine.target(from: state, on: .meetingLeft) {
@@ -128,6 +182,11 @@ final class TeamsMeetingController {
             people = []
             speaker = nil
             broadcaster.emit(.meetingJoined(title: meeting.title))
+        }
+        // The first title read for a meeting joined without one.
+        if title == nil, let read = meeting.title {
+            title = read
+            broadcaster.emit(.titleRead(read))
         }
         // `teams.PARTICIPANTS_READ`: the list of participants is shown and has changed.
         if !meeting.people.isEmpty, meeting.people != people,
@@ -149,9 +208,23 @@ final class TeamsMeetingController {
 
     // MARK: Private
 
-    private func stopReading() {
+    /// Starts or stops the reading according to whether it is needed: Teams access is allowed and
+    /// Teams uses the microphone or a recording is going on.
+    private func reconcile(reason: String) {
+        if access.isAllowed, teamsUsesMicrophone || isRecording {
+            guard !isReading else { return }
+            isReading = true
+            TeamsLog.started(reason)
+            reader.start { [weak self] readout in self?.received(readout) }
+        } else {
+            stopReading(because: reason)
+        }
+    }
+
+    private func stopReading(because reason: String) {
         guard isReading else { return }
         isReading = false
+        TeamsLog.stopped(reason)
         reader.stop()
     }
 

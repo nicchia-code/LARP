@@ -1,6 +1,5 @@
-import AppKit
 import CoreAudio
-import Darwin
+import Foundation
 
 /// Thin reading helpers over the Core Audio process objects (macOS 14.2+).
 enum CoreAudioProcesses {
@@ -68,32 +67,5 @@ enum CoreAudioProcesses {
         )
         guard status == noErr, object != AudioObjectID(kAudioObjectUnknown) else { return nil }
         return object
-    }
-
-    /// The known call app a process belongs to. A helper process (for example a
-    /// browser helper) is mapped to its parent app, first by bundle identifier and
-    /// then by walking up the parent processes.
-    static func callApp(of process: AudioObjectID) -> CallApp? {
-        if let bundleIdentifier = bundleIdentifier(of: process),
-           let app = KnownCallApps.app(forBundleIdentifier: bundleIdentifier) {
-            return app
-        }
-        guard var current = pid(of: process) else { return nil }
-        for _ in 0..<8 {
-            guard let parent = parentPID(of: current), parent > 1 else { return nil }
-            if let bundleIdentifier = NSRunningApplication(processIdentifier: parent)?.bundleIdentifier,
-               let app = KnownCallApps.app(forBundleIdentifier: bundleIdentifier) {
-                return app
-            }
-            current = parent
-        }
-        return nil
-    }
-
-    private static func parentPID(of pid: pid_t) -> pid_t? {
-        var info = proc_bsdinfo()
-        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-        return pid_t(info.pbi_ppid)
     }
 }
